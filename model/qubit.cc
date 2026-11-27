@@ -1,41 +1,40 @@
-#include "ns3/qubit.h"
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
-namespace ns3 {
+#include "qubit.h"
 
-Qubit::Qubit (
-  const std::vector<std::complex<double>> &state_vector_,
-  const std::string &qubit_
-)
-  : m_state_vector (state_vector_),
-    m_qubit (qubit_)
+namespace ns3
 {
-}
 
-Qubit::~Qubit ()
-{
-  m_state_vector.clear ();
-}
-
-Qubit::Qubit () : m_state_vector ({})
-{
-}
+NS_OBJECT_ENSURE_REGISTERED(Qubit);
 
 TypeId
-Qubit::GetTypeId ()
+Qubit::GetTypeId()
 {
-  static TypeId tid = TypeId ("ns3::Qubit").SetParent<Object> ().AddConstructor<Qubit> ();
-  return tid;
+    static TypeId tid =
+        TypeId("ns3::Qubit").SetParent<Object>().SetGroupName("Quantum").AddConstructor<Qubit>();
+    return tid;
 }
 
-std::vector<std::complex<double>>
-Qubit::GetStateVector () const
+Qubit::Qubit(const QuantumTensorData& stateVector, const std::string& name)
+    : m_stateVector(stateVector),
+      m_name(name)
 {
-  return m_state_vector;
+}
+
+QuantumTensorData
+Qubit::GetStateVector() const
+{
+    return m_stateVector;
 }
 
 std::string
-Qubit::GetName () const
+Qubit::GetName() const
 {
-  return m_qubit;
+    return m_name;
 }
+
 } // namespace ns3

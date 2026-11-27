@@ -1,79 +1,83 @@
-// Note that Alice's app must be created before Bob's app
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
-#ifndef DISTRIBUTE_EPR_PROTOCOL
-#define DISTRIBUTE_EPR_PROTOCOL
+#ifndef DISTRIBUTE_EPR_PROTOCOL_H
+#define DISTRIBUTE_EPR_PROTOCOL_H
 
-#include "ns3/socket.h"
-#include "ns3/application.h"
+#include "quantum-application.h"
 
-#include <complex>
+#include <string>
+#include <utility>
 
-namespace ns3 {
+namespace ns3
+{
 
-class QuantumPhyEntity;
 class QuantumChannel;
 
-class DistributeEPRSrcProtocol : public Application // Alice
+/**
+ * @ingroup quantum
+ * Source side of the distribution of Bell pairs over a quantum channel.
+ *
+ * The source creates a Bell pair, keeps the first qubit and sends the second
+ * one to the destination. The transfer is announced by a classical message
+ * carrying the names of both qubits; the qubit changes owner when the message
+ * arrives.
+ *
+ * QuantumNetStackHelper installs one source and one destination per ordered
+ * pair of nodes. Other applications find them with
+ * QuantumPhyEntity::GetConn2Apps() under the key #QNS_APP_DIST_EPR.
+ */
+class DistributeEprSrcProtocol : public QuantumApplication
 {
-public:
-  DistributeEPRSrcProtocol (Ptr<QuantumPhyEntity> qphyent_, Ptr<QuantumChannel> conn_,
-                            const std::pair<std::string, std::string> &epr_);
-  virtual ~DistributeEPRSrcProtocol ();
+  public:
+    /**
+     * Get the type ID.
+     * @return The object TypeId.
+     */
+    static TypeId GetTypeId();
 
-  DistributeEPRSrcProtocol ();
-  static TypeId GetTypeId ();
+    /**
+     * Create a Bell pair and send its second qubit to the destination.
+     *
+     * @param epr Unique names of the two qubits; the first stays at the source.
+     */
+    void GenerateAndDistributeEpr(const std::pair<std::string, std::string>& epr);
 
-  void GenerateAndDistributeEPR (const std::pair<std::string, std::string> &epr = {});
+  protected:
+    void DoDispose() override;
 
-  void SetRemote (Address ip, uint16_t port);
-  void SetFill (std::string fill);
-  void SendPacket (Ptr<Packet> packet, Ipv6Address destination, uint16_t port);
-  void Send (const std::pair<std::string, std::string> &epr = {});
-
-  bool SetEPR (const std::pair<std::string, std::string> &m_epr);
-
-private:
-  virtual void StartApplication ();
-
-  Ptr<Socket> m_send_socket; /**< A socket to listen on a specific port */
-
-  Address m_peerAddress; //!< Remote peer address
-  uint16_t m_peerPort; //!< Remote peer port
-
-  uint32_t m_size; //!< Size of the sent packet
-  uint32_t m_dataSize; //!< packet payload size (must be equal to m_size)
-  uint8_t *m_data; //!< packet payload data
-
-  Ptr<QuantumPhyEntity> m_qphyent;
-  Ptr<QuantumChannel> m_conn;
-  std::pair<std::string, std::string> m_epr;
+  private:
+    Ptr<QuantumChannel> m_channel; //!< The quantum channel to the destination
 };
 
-class DistributeEPRDstProtocol : public Application // Bob
+/**
+ * @ingroup quantum
+ * Destination side of the distribution of Bell pairs over a quantum channel.
+ *
+ * On each announcement the destination takes ownership of the arriving qubit
+ * and applies the noise of the channel to it.
+ */
+class DistributeEprDstProtocol : public QuantumApplication
 {
-public:
-  DistributeEPRDstProtocol (Ptr<QuantumPhyEntity> qphyent_, Ptr<QuantumChannel> conn_);
-  virtual ~DistributeEPRDstProtocol ();
+  public:
+    /**
+     * Get the type ID.
+     * @return The object TypeId.
+     */
+    static TypeId GetTypeId();
 
-  DistributeEPRDstProtocol ();
-  static TypeId GetTypeId ();
+  protected:
+    void DoDispose() override;
 
-  void HandleRead (Ptr<Socket> socket);
+  private:
+    void HandleMessage(const std::string& message, const Address& from) override;
 
-  std::vector<std::complex<double>> GetOutput () const;
-
-private:
-  void SetupReceiveSocket (Ptr<Socket> socket, uint16_t port);
-  virtual void StartApplication ();
-
-  Ptr<Socket> m_recv_socket;
-  uint16_t m_port;
-
-  Ptr<QuantumPhyEntity> m_qphyent;
-  Ptr<QuantumChannel> m_conn;
-  std::vector<std::complex<double>> m_output;
+    Ptr<QuantumChannel> m_channel; //!< The quantum channel from the source
 };
 
 } // namespace ns3
 
-#endif /* DISTRIBUTE_EPR_PROTOCOL */
+#endif /* DISTRIBUTE_EPR_PROTOCOL_H */

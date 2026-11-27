@@ -1,168 +1,175 @@
-#include "ns3/quantum-node.h"
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
-#include "ns3/quantum-basis.h"
-#include "ns3/quantum-phy-entity.h" // class QuantumPhyEntity functions
-#include "ns3/quantum-error-model.h" // class QuantumErrorModel
+#include "quantum-node.h"
 
-namespace ns3 {
+#include "quantum-memory.h"
+#include "quantum-phy-entity.h"
 
-NS_LOG_COMPONENT_DEFINE ("QuantumNode");
+#include "ns3/abort.h"
+#include "ns3/ipv4.h"
+#include "ns3/ipv6.h"
+#include "ns3/log.h"
+#include "ns3/node.h"
 
-NS_OBJECT_ENSURE_REGISTERED (QuantumNode);
-
-QuantumNode::QuantumNode (Ptr<QuantumPhyEntity> qphyent_, std::string owner_)
-    : Node (),
-      m_qphyent (qphyent_),
-      m_owner (owner_),
-      m_address (Address ()),
-      m_next_port (9),
-      m_rank (UINT_MAX),
-      m_qmemory (QuantumMemory ())
+namespace ns3
 {
-}
 
-QuantumNode::~QuantumNode ()
-{
-}
+NS_LOG_COMPONENT_DEFINE("QuantumNode");
 
-QuantumNode::QuantumNode ()
-    : Node (),
-      m_qphyent (nullptr),
-      m_owner (""),
-      m_address (Address ()),
-      m_next_port (9),
-      m_rank (UINT_MAX),
-      m_qmemory (QuantumMemory ())
-{
-}
-
-void
-QuantumNode::DoDispose (void)
-{
-  Node::DoDispose ();
-}
+NS_OBJECT_ENSURE_REGISTERED(QuantumNode);
 
 TypeId
-QuantumNode::GetTypeId (void)
+QuantumNode::GetTypeId()
 {
-  static TypeId tid = TypeId ("ns3::QuantumNode").SetParent<Node> ().AddConstructor<QuantumNode> ();
-  return tid;
+    static TypeId tid = TypeId("ns3::QuantumNode")
+                            .SetParent<Object>()
+                            .SetGroupName("Quantum")
+                            .AddConstructor<QuantumNode>();
+    return tid;
+}
+
+QuantumNode::QuantumNode()
+    : QuantumNode(nullptr, "")
+{
+}
+
+QuantumNode::QuantumNode(Ptr<QuantumPhyEntity> qphyent, const std::string& owner)
+    : m_qphyent(qphyent),
+      m_owner(owner),
+      m_memory(CreateObject<QuantumMemory>())
+{
+    NS_LOG_FUNCTION(this << owner);
 }
 
 void
-QuantumNode::SetAddress (Address addr)
+QuantumNode::DoDispose()
 {
-  NS_LOG_LOGIC ("Setting m_address of " << m_owner << " to " << addr);
-  m_address = addr;
-}
-
-Address
-QuantumNode::GetAddress () const
-{
-  return m_address;
-}
-
-uint16_t
-QuantumNode::AllocPort ()
-{
-  return m_next_port++;
-}
-
-uint16_t
-QuantumNode::GetNextPort () const
-{
-  return m_next_port;
-}
-
-Ptr<QuantumPhyEntity>
-QuantumNode::GetQuantumPhyEntity () const
-{
-  return m_qphyent;
-}
-
-void
-QuantumNode::SetRank (unsigned r)
-{
-  m_rank = r;
-}
-
-unsigned
-QuantumNode::GetRank () const
-{
-  return m_rank;
-}
-
-void
-QuantumNode::AddQubit (const std::string &name)
-{
-  NS_LOG_INFO (YELLOW_CODE << "Adding qubit " << name << " to " << m_owner << " with local idx "
-                           << m_qmemory.GetSize () << END_CODE);
-  m_qmemory.AddQubit (name.c_str ());
-}
-
-bool
-QuantumNode::RemoveQubit (const std::string &name)
-{
-  NS_LOG_INFO (RED_CODE << "Removing qubit " << name << " from " << m_owner << END_CODE);
-  return m_qmemory.RemoveQubit (name.c_str ());
+    NS_LOG_FUNCTION(this);
+    m_qphyent = nullptr;
+    m_memory = nullptr;
+    Object::DoDispose();
 }
 
 std::string
-QuantumNode::GetQubit (unsigned local) const
+QuantumNode::GetOwner() const
 {
-  return m_qmemory.GetQubit (local);
+    return m_owner;
+}
+
+Ptr<Node>
+QuantumNode::GetNode() const
+{
+    return GetObject<Node>();
+}
+
+Ptr<QuantumPhyEntity>
+QuantumNode::GetQuantumPhyEntity() const
+{
+    return m_qphyent;
+}
+
+Ptr<QuantumMemory>
+QuantumNode::GetQuantumMemory() const
+{
+    return m_memory;
+}
+
+void
+QuantumNode::SetAddress(const Address& address)
+{
+    NS_LOG_FUNCTION(this << address);
+    m_address = address;
+}
+
+Address
+QuantumNode::GetAddress() const
+{
+    if (!m_address.IsInvalid())
+    {
+        return m_address;
+    }
+
+    Ptr<Node> node = GetNode();
+    NS_ABORT_MSG_UNLESS(node, "The quantum node " << m_owner << " is not aggregated to a node");
+    // Interface 0 is the loopback interface.
+    if (Ptr<Ipv4> ipv4 = node->GetObject<Ipv4>())
+    {
+        for (uint32_t i = 1; i < ipv4->GetNInterfaces(); ++i)
+        {
+            if (ipv4->GetNAddresses(i) > 0)
+            {
+                return ipv4->GetAddress(i, 0).GetLocal();
+            }
+        }
+    }
+    if (Ptr<Ipv6> ipv6 = node->GetObject<Ipv6>())
+    {
+        for (uint32_t i = 1; i < ipv6->GetNInterfaces(); ++i)
+        {
+            for (uint32_t j = 0; j < ipv6->GetNAddresses(i); ++j)
+            {
+                const Ipv6InterfaceAddress address = ipv6->GetAddress(i, j);
+                if (address.GetScope() == Ipv6InterfaceAddress::GLOBAL)
+                {
+                    return address.GetAddress();
+                }
+            }
+        }
+    }
+    NS_ABORT_MSG("The node of " << m_owner << " has neither an IPv4 nor a global IPv6 address; "
+                                << "assign addresses before installing quantum applications");
+    return Address();
+}
+
+uint16_t
+QuantumNode::GetServicePort(const std::string& service)
+{
+    NS_LOG_FUNCTION(this << service);
+    auto it = m_servicePorts.find(service);
+    if (it != m_servicePorts.end())
+    {
+        return it->second;
+    }
+    NS_ABORT_MSG_IF(m_nextPort == 0, "The node " << m_owner << " ran out of UDP ports");
+    const uint16_t port = m_nextPort++;
+    m_servicePorts[service] = port;
+    return port;
+}
+
+void
+QuantumNode::AddQubit(const std::string& qubit)
+{
+    NS_LOG_FUNCTION(this << qubit);
+    m_memory->AddQubit(qubit);
 }
 
 bool
-QuantumNode::OwnQubit (const std::string &name) const
+QuantumNode::RemoveQubit(const std::string& qubit)
 {
-  return m_qmemory.ContainQubit (name.c_str ());
-}
-
-void
-QuantumNode::SetErrorModel (Ptr<QuantumErrorModel> pmodel, const std::string &qubit)
-{
-  m_qphyent->SetErrorModel (pmodel, qubit);
-}
-
-void
-QuantumNode::SetDephaseModel (const std::string &gate,
-                              double rate // dephasing rate of the gate of the node
-)
-{
-  m_qphyent->SetDephaseModel (m_owner, gate, rate);
-}
-
-void
-QuantumNode::SetTimeModel (double rate) // dephasing rate of the time model
-{
-  m_qphyent->SetTimeModel (m_owner, rate);
-}
-
-const std::string &
-QuantumNode::GetOwner () const
-{
-  return m_owner;
+    NS_LOG_FUNCTION(this << qubit);
+    return m_memory->RemoveQubit(qubit);
 }
 
 bool
-QuantumNode::operator<(const QuantumNode &another) const
+QuantumNode::HasQubit(const std::string& qubit) const
 {
-  return m_rank < another.m_rank;
+    return m_memory->HasQubit(qubit);
 }
 
 void
-QuantumNode::PrintIt () const
+QuantumNode::SetTimeModel(Time coherenceTime)
 {
-  NS_LOG_LOGIC ("m_owner  : " << m_owner << "\naddress: " << m_address
-                              << "\nnapps  : " << GetNApplications ());
+    m_qphyent->SetTimeModel(m_owner, coherenceTime);
 }
 
-std::ostream &
-operator<< (std::ostream &out, const Ptr<QuantumNode> &pnode)
+void
+QuantumNode::SetDephaseModel(const std::string& gate, Time coherenceTime)
 {
-  out << pnode->GetOwner ();
-  return out;
+    m_qphyent->SetDephaseModel(m_owner, gate, coherenceTime);
 }
 
 } // namespace ns3

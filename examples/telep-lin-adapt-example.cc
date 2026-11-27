@@ -1,175 +1,138 @@
 /*
-  To run this example:
-  NS_LOG="QuantumNetworkSimulator=info:QuantumPhyEntity=info|logic:TelepLinAdaptApp=logic" ./ns3 run telep-lin-adapt-example
-  Note that by adding "TelepLinAdaptApp=logic", the simulator logs the details of the whole process of chained teleportation.
-  Also note that to simulate a longer chain, the allocation of addresses and ports needs to be modified.
-*/
-#include "ns3/csma-module.h" // class CsmaHelper, NetDeviceContainer
-#include "ns3/internet-module.h" // class InternetStackHelper, Ipv6AddressHelper, Ipv6InterfaceContainer
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
-#include "ns3/quantum-basis.h" // class APP_DISTILL_NESTED
-#include "ns3/quantum-network-simulator.h" // class QuantumNetworkSimulator
-#include "ns3/quantum-phy-entity.h" // class QuantumPhyEntity
-#include "ns3/quantum-node.h" // class QuantumNode
-#include "ns3/quantum-channel.h" // class QuantumChannel
-#include "ns3/distribute-epr-helper.h" // class DistributeEPRSrcHelper, DistributeEPRDstHelper
-#include "ns3/quantum-net-stack-helper.h" // class QuantumNetStackHelper
-#include "ns3/telep-lin-adapt-helper.h" // class TelepLinAdaptHelper
-#include "ns3/telep-lin-adapt-app.h" // class TelepLinAdaptApp
+#include "ns3/core-module.h"
+#include "ns3/csma-module.h"
+#include "ns3/internet-module.h"
+#include "ns3/quantum-module.h"
 
 #include <iostream>
-#include <cmath>
-#include <complex>
+#include <string>
+#include <vector>
 
-NS_LOG_COMPONENT_DEFINE ("TelepLinAdaptExample");
+/**
+ * @file
+ * @ingroup quantum
+ * Teleport a qubit along a chain of nodes, exactly.
+ *
+ * Every node runs TelepLinAdaptApp. No node measures: the corrections are
+ * applied as controlled gates at the end of the chain, so one run yields the
+ * exact final state for all measurement branches at once.
+ */
 
 using namespace ns3;
 
-#define N (8)
-/*
-Evaluating tensor network of size 202
- in 6.33792 secs
-/*
-// #define N (16)
-/*
-Evaluating tensor network of size 426
- in 12.8941 secs
-*/
-// #define N (32)
-/*
-Evaluating tensor network of size 874
- in 26.6684 secs
-*/
-// #define N (64)
-/*
-Evaluating tensor network of size 1770
- in 54.291 secs
-*/
-// #define N (72)
-/*
-Evaluating tensor network of size 1994
- in 61.025 secs
-*/
+NS_LOG_COMPONENT_DEFINE("TelepLinAdaptExample");
 
+/// Set once the protocol has finished and its results have been printed.
+static bool g_finished = false;
 
-
+/**
+ * Print the state of the teleported qubit. Sink of the Finished trace source.
+ *
+ * @param qphyent The quantum physical entity.
+ * @param state The state that was to be teleported.
+ * @param qubit Name of the qubit that now holds the state.
+ * @param app The application that finished.
+ */
+static void
+ReportTeleportedState(Ptr<QuantumPhyEntity> qphyent,
+                      const QuantumTensorData& state,
+                      const std::string& qubit,
+                      Ptr<const QuantumApplication> app)
+{
+    const QuantumTensorData output = qphyent->PeekDensityMatrix(QNS_GOD_OWNER, {qubit});
+    // The fidelity of the output with the input state is <state| output |state>.
+    std::complex<double> overlap = 0;
+    for (std::size_t row = 0; row < 2; ++row)
+    {
+        for (std::size_t col = 0; col < 2; ++col)
+        {
+            overlap += std::conj(state[row]) * output[2 * row + col] * state[col];
+        }
+    }
+    std::cout << "Density matrix of the teleported qubit, row by row:";
+    for (const auto& entry : output)
+    {
+        std::cout << " " << entry;
+    }
+    std::cout << std::endl;
+    std::cout << "Fidelity with the input state: " << overlap.real() << std::endl;
+    g_finished = true;
+}
 
 int
-main ()
+main(int argc, char* argv[])
 {
-  //
-  // Create a quantum physical entity with N nodes.
-  //
-  std::vector<std::string> owners = {};
-  for (int i = 0; i < N; ++i)
+    uint32_t nNodes = 8;
+    double firstFidelity = 0.95;
+    double fidelity = 0.98;
+
+    CommandLine cmd(__FILE__);
+    cmd.AddValue("nNodes", "Number of nodes of the chain", nNodes);
+    cmd.AddValue("firstFidelity", "Fidelity of the Bell pair of the first hop", firstFidelity);
+    cmd.AddValue("fidelity", "Fidelity of the Bell pairs of the other hops", fidelity);
+    cmd.Parse(argc, argv);
+    NS_ABORT_MSG_IF(nNodes < 2, "The chain needs at least 2 nodes");
+
+    // The classical network: all nodes on one CSMA segment, with IPv6.
+    NodeContainer nodes;
+    nodes.Create(nNodes);
+    CsmaHelper csma;
+    csma.SetChannelAttribute("DataRate", DataRateValue(DataRate("1000kbps")));
+    csma.SetChannelAttribute("Delay", TimeValue(MicroSeconds(100)));
+    NetDeviceContainer devices = csma.Install(nodes);
+    InternetStackHelper internet;
+    internet.Install(nodes);
+    Ipv6AddressHelper addresses;
+    addresses.SetBase("2001:1::", Ipv6Prefix(64));
+    addresses.Assign(devices);
+
+    // The quantum network on top of it.
+    std::vector<std::string> owners;
+    owners.reserve(nNodes);
+    for (uint32_t i = 0; i < nNodes; ++i)
     {
-      owners.push_back ("Owner" + std::to_string (i));
+        owners.push_back("Owner" + std::to_string(i));
     }
-  Ptr<QuantumPhyEntity> qphyent = CreateObject<QuantumPhyEntity> (owners);
+    QuantumNetStackHelper stack;
+    Ptr<QuantumPhyEntity> qphyent =
+        stack.Install(nodes, owners, QuantumNetStackHelper::Connectivity::CHAIN);
 
-  NodeContainer nodes;
-  for (int i = 0; i < N; ++i)
+    // The state to teleport: sqrt(5/7) |0> + i sqrt(2/7) |1>.
+    const QuantumTensorData state{{std::sqrt(5.0 / 7.0), 0.0}, {0.0, std::sqrt(2.0 / 7.0)}};
+
+    for (uint32_t i = 0; i + 1 < nNodes; ++i)
     {
-      Ptr<QuantumNode> node = qphyent->GetNode ("Owner" + std::to_string (i));
-      nodes.Add (node);
+        Ptr<QuantumChannel> channel = CreateObject<QuantumChannel>(owners[i], owners[i + 1]);
+        qphyent->SetDepolarModel(channel, i == 0 ? firstFidelity : fidelity);
+
+        TelepLinAdaptHelper helper(qphyent, channel);
+        helper.SetAttribute("EPR",
+                            PairValue<StringValue, StringValue>(
+                                {owners[i] + "_Qubit1", owners[i + 1] + "_Qubit0"}));
+        if (i == 0)
+        {
+            helper.SetAttribute("Input",
+                                PointerValue(CreateObject<Qubit>(state, owners[0] + "_Qubit0")));
+        }
+        helper.Install();
     }
+    // The last node only receives.
+    TelepLinAdaptHelper lastHelper(qphyent, nullptr);
+    ApplicationContainer lastApp = lastHelper.Install(qphyent->GetQuantumNode(owners.back()));
+    // What to report, and when: the state at the last node, once the chain is done.
+    lastApp.Get(0)->TraceConnectWithoutContext(
+        "Finished",
+        MakeBoundCallback(&ReportTeleportedState, qphyent, state, owners.back() + "_Qubit0"));
 
-  //
-  // Create a classical connection.
-  //
-  CsmaHelper csmaHelper;
-  csmaHelper.SetChannelAttribute ("DataRate", DataRateValue (DataRate ("1000kbps")));
-  csmaHelper.SetChannelAttribute ("Delay", TimeValue (MilliSeconds (1e-1)));
-  NetDeviceContainer devices = csmaHelper.Install (nodes);
+    Simulator::Stop(MilliSeconds(100) * nNodes);
+    Simulator::Run();
+    NS_ABORT_MSG_UNLESS(g_finished, "The protocol did not finish before the simulation stopped");
 
-  InternetStackHelper stack;
-  stack.Install (nodes);
-  Ipv6AddressHelper address;
-  address.SetBase ("2001:1::", Ipv6Prefix (64));
-  Ipv6InterfaceContainer interfaces = address.Assign (devices);
-
-  unsigned rank = 0;
-  for (const std::string &owner : owners)
-    {
-      qphyent->SetOwnerAddress (owner, interfaces.GetAddress (rank, 1));
-      qphyent->SetOwnerRank (owner, rank);
-      ++rank;
-    }
-
-  //
-  // Install the quantum network stack.
-  //
-  QuantumNetStackHelper qstack;
-  qstack.Install (nodes);
-
-  //
-  // Install the quantum applications.
-  //
-
-  // 
-  // Setup the first teleporatation from Owner0 to Owner1.
-  //
-  Ptr<QuantumChannel> qconn0 = CreateObject<QuantumChannel> ("Owner0", "Owner1");
-  qconn0->SetDepolarModel (0.95, qphyent);
-
-  Ptr<Qubit> input = CreateObject<Qubit> (std::vector<std::complex<double>>{
-      {sqrt (5. / 7.), 0.0},
-      {0.0, sqrt (2. / 7.)}},
-      "Owner0_Qubit0");
-  TelepLinAdaptHelper helper0 (qphyent, qconn0);
-  helper0.SetAttribute ("EPR",
-                        PairValue<StringValue, StringValue> ({"Owner0_Qubit1", "Owner1_Qubit0"}));
-  helper0.SetAttribute ("Input", PointerValue (input));
-
-  ApplicationContainer app0 = helper0.Install (qphyent->GetNode ("Owner0"));
-  app0.Start (Seconds (0.));
-  app0.Stop (Seconds(ETERNITY));
-
-  //
-  // Setup the intermediate N - 2 teleportations from Owner1 to OwnerN-2.
-  //
-  for (int rank = 1; rank < N - 1; ++rank)
-    {
-      std::string srcOwner = "Owner" + std::to_string (rank);
-      std::string dstOwner = "Owner" + std::to_string (rank + 1);
-
-      Ptr<QuantumChannel> qconn =
-          CreateObject<QuantumChannel> (std::pair<std::string, std::string>{srcOwner, dstOwner});
-      qconn->SetDepolarModel (0.98, qphyent);
-
-      TelepLinAdaptHelper helper (qphyent, qconn);
-      helper.SetAttribute ("EPR", PairValue<StringValue, StringValue> (
-                            {srcOwner + "_Qubit1", dstOwner + "_Qubit0"}
-                          ));
-      helper.SetAttribute ("Input", PointerValue (nullptr));
-
-      ApplicationContainer app = helper.Install (qphyent->GetNode (srcOwner));
-      app.Start (Seconds (0.));
-      app.Stop (Seconds(ETERNITY));
-    }
-
-  //
-  // Setup the teleportation application for OwnerN-1.
-  //
-  Ptr<QuantumChannel> qconnN = nullptr;
-  TelepLinAdaptHelper helperN (qphyent, qconnN);
-  helperN.SetAttribute ("EPR", PairValue<StringValue, StringValue> ({"", ""}));
-  helperN.SetAttribute ("Input", PointerValue (nullptr));
-
-  ApplicationContainer appN = helperN.Install (qphyent->GetNode ("Owner" + std::to_string (N - 1)));
-  appN.Start (Seconds (0.));
-  appN.Stop (Seconds(ETERNITY));
-
-  //
-  // Run the simulation.
-  //
-  Simulator::Stop (Seconds (CLASSICAL_DELAY * N));
-  auto start = std::chrono::high_resolution_clock::now ();
-  Simulator::Run ();
-  auto end = std::chrono::high_resolution_clock::now ();
-  printf ("Total time cost: %ld s\n",
-          std::chrono::duration_cast<std::chrono::seconds> (end - start).count ());
-  Simulator::Destroy ();
-
-  return 0;
+    Simulator::Destroy();
+    return 0;
 }

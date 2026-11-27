@@ -1,60 +1,85 @@
-#ifndef QUANTUM_ERROR_H
-#define QUANTUM_ERROR_H
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
-#include "ns3/quantum-basis.h"
+#ifndef QUANTUM_OPERATION_H
+#define QUANTUM_OPERATION_H
 
-namespace ns3 {
-class QuantumOperation
+#include "quantum-basis.h"
+
+#include <string>
+#include <vector>
+
+namespace ns3
 {
 
-private:
+/**
+ * @ingroup quantum
+ * A quantum operation given as a probabilistic mixture of gates.
+ *
+ * The operation maps a state rho to the sum over i of p_i U_i rho U_i^dagger,
+ * where U_i is the i-th gate and p_i its probability. The class stores the
+ * Kraus operators sqrt(p_i) U_i.
+ */
+class QuantumOperation
+{
+  public:
+    /**
+     * Constructor.
+     *
+     * @param names Names of the gates, for logging.
+     * @param gates Matrices of the gates, all of the same size.
+     * @param probabilities Probability of each gate; they must sum to one.
+     */
+    QuantumOperation(const std::vector<std::string>& names,
+                     const std::vector<QuantumTensorData>& gates,
+                     const std::vector<double>& probabilities);
 
-  /** Names of the unitaries composing this quantum operation. */
-  std::vector<std::string> m_name;
+    /**
+     * Get the name of a gate.
+     *
+     * @param index Index of the gate.
+     * @return The name of the gate.
+     */
+    std::string GetName(std::size_t index) const;
 
-  /** Unitaries composing this quantum operation. */
-  std::vector<std::vector<std::complex<double>>> m_opr;
+    /**
+     * Get the probability of a gate.
+     *
+     * @param index Index of the gate.
+     * @return The probability of the gate.
+     */
+    double GetProbability(std::size_t index) const;
 
-  /**
-   * \brief Probabilities to perform each unitary. 
-   * 
-   * \note All probabilities should sum up to 1.
-  */
-  std::vector<double> m_prob;
+    /**
+     * Get the Kraus operators.
+     *
+     * @return The gates, each scaled by the square root of its probability.
+     */
+    const std::vector<QuantumTensorData>& GetKrausOperators() const;
 
-  /** Number of unitaries in this quantum operation. */
-  unsigned m_size;
+    /**
+     * Get the number of gates in the mixture.
+     *
+     * @return The number of gates.
+     */
+    std::size_t GetSize() const;
 
-public:
-  /**
-   * \brief Construct a quantum operation.
-   * \param name_ Names of the unitaries composing this quantum operation.
-   * \param opr_ Unitaries composing this quantum operation.
-   * \param prob_ Probabilities to perform each unitary.
-   * 
-   * \note All probabilities should sum up to 1.
-   * \note The size of name_, opr_ and prob_ should be the same.
-  */
-  QuantumOperation (const std::vector<std::string> &name_,
-                    const std::vector<std::vector<std::complex<double>>> &opr_,
-                    const std::vector<double> &prob_);
+    /**
+     * Get the number of qubits the operation acts on.
+     *
+     * @return The number of qubits.
+     */
+    unsigned GetNQubits() const;
 
-  const std::string &getName (unsigned idx) const;
-  
-  const std::vector<std::complex<double>> &getOpr (unsigned idx) const;
-  
-  const std::vector<std::vector<std::complex<double>>> &getOprs () const;
-  
-  const double &getProb (unsigned idx) const;
-  
-  const unsigned &getSize () const;
+  private:
+    std::vector<std::string> m_names;       //!< Names of the gates
+    std::vector<QuantumTensorData> m_kraus; //!< Kraus operators
+    std::vector<double> m_probabilities;    //!< Probabilities of the gates
 };
-
-/** Default depolarizing quantum operation. */
-const QuantumOperation depol = {{"I", "PX", "PY", "PZ"},
-                                {pauli_I, pauli_X, pauli_Y, pauli_Z},
-                                {0.8, 0.2 / 3, 0.2 / 3, 0.2 / 3}};
 
 } // namespace ns3
 
-#endif /* QUANTUM_ERROR_H */
+#endif /* QUANTUM_OPERATION_H */

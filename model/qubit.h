@@ -1,41 +1,64 @@
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
+
 #ifndef QUBIT_H
 #define QUBIT_H
 
+#include "quantum-basis.h"
+
 #include "ns3/object.h"
 
-#include "ns3/quantum-basis.h"
+#include <string>
 
-#include <complex>
-
-namespace ns3 {
-
-/**
- * \brief Qubit in state vector representation.
- * 
- * \note This class is only used for attribute passing when setting up quantum applications.
-*/
-class Qubit : public Object
+namespace ns3
 {
 
-private:
+/**
+ * @ingroup quantum
+ * A named qubit together with the pure state it is to be prepared in.
+ *
+ * Applications receive the qubits they must prepare as Qubit objects through
+ * the attribute system. The live state of a qubit is held by QuantumPhyEntity.
+ */
+class Qubit : public Object
+{
+  public:
+    /**
+     * Get the type ID.
+     * @return The object TypeId.
+     */
+    static TypeId GetTypeId();
 
-  /** State vector of the qubit. */
-  std::vector<std::complex<double>> m_state_vector;
-  /** Name of the qubit. */
-  std::string m_qubit;
+    Qubit() = default;
 
-public:
+    /**
+     * Constructor.
+     *
+     * @param stateVector State vector to prepare; empty if the qubit already exists.
+     * @param name Name of the qubit.
+     */
+    Qubit(const QuantumTensorData& stateVector, const std::string& name);
 
-  Qubit (
-    const std::vector<std::complex<double>> &state_vector_,
-    const std::string &qubit_ = "");
-  ~Qubit ();
+    /**
+     * Get the state to prepare.
+     *
+     * @return The state vector; empty if the qubit already exists.
+     */
+    QuantumTensorData GetStateVector() const;
 
-  Qubit ();
-  static TypeId GetTypeId ();
+    /**
+     * Get the name.
+     *
+     * @return The name of the qubit.
+     */
+    std::string GetName() const;
 
-  std::vector<std::complex<double>> GetStateVector () const;
-  std::string GetName () const;
+  private:
+    QuantumTensorData m_stateVector; //!< State vector to prepare
+    std::string m_name;              //!< Name of the qubit
 };
 
 } // namespace ns3

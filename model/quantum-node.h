@@ -1,124 +1,165 @@
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
+
 #ifndef QUANTUM_NODE_H
 #define QUANTUM_NODE_H
 
-#include "ns3/node.h" // class Node
+#include "ns3/address.h"
+#include "ns3/nstime.h"
+#include "ns3/object.h"
+#include "ns3/ptr.h"
 
-#include "ns3/quantum-memory.h" // class QuantumMemory
+#include <map>
+#include <string>
 
-namespace ns3 {
-
-class QuantumPhyEntity;
-class QuantumErrorModel;
-
-class QuantumNode : public Node
+namespace ns3
 {
 
-private:
-  
-  /** Quantum physical entity the node is attached to. */
-  Ptr<QuantumPhyEntity> m_qphyent;
+class Node;
+class QuantumErrorModel;
+class QuantumMemory;
+class QuantumPhyEntity;
 
-  /** Owner name of the node. */
-  const std::string m_owner;
+/**
+ * @ingroup quantum
+ * The quantum side of a node: its owner name and its quantum memory.
+ *
+ * A QuantumNode is aggregated to an ordinary ns3::Node by
+ * QuantumPhyEntity::AddNode(), usually through QuantumNetStackHelper. Any node
+ * can therefore take part in a quantum network, however it was created, and is
+ * reached from its node with GetObject<QuantumNode>().
+ */
+class QuantumNode : public Object
+{
+  public:
+    /**
+     * Get the type ID.
+     * @return The object TypeId.
+     */
+    static TypeId GetTypeId();
 
-  /** Address of the node. */
-  Address m_address;
+    QuantumNode();
 
-  /** Next port to be allocated. */
-  uint16_t m_next_port;
+    /**
+     * Constructor.
+     *
+     * @param qphyent The quantum physical entity the node belongs to.
+     * @param owner Unique owner name of the node.
+     */
+    QuantumNode(Ptr<QuantumPhyEntity> qphyent, const std::string& owner);
 
-  /** Rank of the node in some certain subnet. */
-  unsigned m_rank;
+    /**
+     * Get the owner name.
+     *
+     * @return The owner name of the node.
+     */
+    std::string GetOwner() const;
 
-  /** Quantum memory of the node. */
-  QuantumMemory m_qmemory;
+    /**
+     * Get the node this object is aggregated to.
+     *
+     * @return The node.
+     */
+    Ptr<Node> GetNode() const;
 
-public:
-  QuantumNode (Ptr<QuantumPhyEntity> phyent_, std::string owner_);
-  ~QuantumNode ();
+    /**
+     * Get the quantum physical entity.
+     *
+     * @return The quantum physical entity the node belongs to.
+     */
+    Ptr<QuantumPhyEntity> GetQuantumPhyEntity() const;
 
-  QuantumNode ();
-  void DoDispose (void) override;
-  static TypeId GetTypeId (void);
+    /**
+     * Get the quantum memory.
+     *
+     * @return The memory holding the qubits the node owns.
+     */
+    Ptr<QuantumMemory> GetQuantumMemory() const;
 
-  void SetAddress (Address addr);
-  Address GetAddress () const;
+    /**
+     * Set the address at which the applications of other nodes reach this node.
+     *
+     * By default the node uses its first IPv4 address, or else its first
+     * global IPv6 address.
+     *
+     * @param address An IPv4 or IPv6 address of the node.
+     */
+    void SetAddress(const Address& address);
 
-  void SetRank (unsigned r);
-  unsigned GetRank () const;
+    /**
+     * Get the address at which the applications of other nodes reach this node.
+     *
+     * @return An IPv4 or IPv6 address of the node.
+     */
+    Address GetAddress() const;
 
-  /**
-   * \brief Allocate a port for the node.
-   * \return The allocated port.
-  */
-  uint16_t AllocPort ();
+    /**
+     * Get the UDP port on which the node offers a service.
+     *
+     * The first request for a service reserves a port; later requests return
+     * the same port. A receiving application and the applications that send to
+     * it can therefore be configured in any order.
+     *
+     * @param service Name of the service; see QuantumChannel::GetServiceName().
+     * @return The UDP port of the service.
+     */
+    uint16_t GetServicePort(const std::string& service);
 
-  /**
-   * \brief Get the next port to be allocated.
-   * \return The next port to be allocated.
-  */
-  uint16_t GetNextPort () const;
+    /**
+     * Take ownership of a qubit.
+     *
+     * @param qubit Name of the qubit.
+     */
+    void AddQubit(const std::string& qubit);
 
-  Ptr<QuantumPhyEntity> GetQuantumPhyEntity () const;
+    /**
+     * Give up ownership of a qubit.
+     *
+     * @param qubit Name of the qubit.
+     * @return True if the node owned the qubit.
+     */
+    bool RemoveQubit(const std::string& qubit);
 
-  /**
-   * \brief Add a qubit to the node's quantum memory.
-   * \param name Name of the qubit to be added.
-  */
-  void AddQubit (const std::string &name);
+    /**
+     * Check whether the node owns a qubit.
+     *
+     * @param qubit Name of the qubit.
+     * @return True if the node owns the qubit.
+     */
+    bool HasQubit(const std::string& qubit) const;
 
-  /**
-   * \brief Remove a qubit from the node's quantum memory.
-   * \param name Name of the qubit to be removed.
-   * \return True if the qubit is successfully removed.
-  */
-  bool RemoveQubit (const std::string &name);
+    /**
+     * Set the memory noise of the qubits that the node generates from now on.
+     *
+     * @param coherenceTime Coherence time of the memory; see TimeModel.
+     */
+    void SetTimeModel(Time coherenceTime);
 
-  /**
-   * \brief Get the qubit at a specific position.
-   * \param local The position in the quantum memory to query.
-   * \return Name of the qubit at the position.
-  */
-  std::string GetQubit (unsigned local) const;
+    /**
+     * Set the noise of a gate applied by the node.
+     *
+     * @param gate Name of the gate.
+     * @param coherenceTime Coherence time of the gate; see DephaseModel.
+     */
+    void SetDephaseModel(const std::string& gate, Time coherenceTime);
 
-  /**
-   * \brief Check if a qubit is in the node's quantum memory.
-   * \param name Name of the qubit to be checked.
-   * \return True if the qubit is in the quantum memory.
-  */
-  bool OwnQubit (const std::string &name) const;
+  protected:
+    void DoDispose() override;
 
+  private:
+    /// First UDP port handed out by GetServicePort(), the start of the dynamic range.
+    static constexpr uint16_t FIRST_PORT{49152};
 
-  /**
-   * \brief Set the time relevant dephasing error model for a qubit.
-   * \param pmodel Pointer to the time relevant dephasing error model.
-   * \param qubit Name of the qubit to be set the error model.
-  */
-  void SetErrorModel (Ptr<QuantumErrorModel> pmodel, const std::string &qubit);
-
-
-  /**
-   * \brief Set the time irrelevant dephasing error model for a gate.
-   * \param gate Name of the gate to be set the error model.
-   * \param rate Dephasing rate of the gate.
-  */
-  void SetDephaseModel (const std::string &gate, double rate 
-  );
-
-  /**
-   * \brief Set the time relevant dephasing error model for qubits generated by this node.
-   * \param rate Dephasing rate of the qubits.
-  */
-  void SetTimeModel (double rate);
-
-  const std::string &GetOwner () const;
-
-  bool operator<(const QuantumNode &another) const;
-
-  void PrintIt () const;
+    Ptr<QuantumPhyEntity> m_qphyent;                //!< The quantum physical entity
+    std::string m_owner;                            //!< Owner name
+    Ptr<QuantumMemory> m_memory;                    //!< Qubits the node owns
+    Address m_address;                              //!< Address set by the user, if any
+    uint16_t m_nextPort{FIRST_PORT};                //!< Next UDP port to hand out
+    std::map<std::string, uint16_t> m_servicePorts; //!< UDP port of each service
 };
-
-std::ostream &operator<< (std::ostream &out, const Ptr<QuantumNode> &pnode);
 
 } // namespace ns3
 

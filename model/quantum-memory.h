@@ -1,62 +1,92 @@
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
+
 #ifndef QUANTUM_MEMORY_H
 #define QUANTUM_MEMORY_H
 
 #include "ns3/object.h"
 
-namespace ns3 {
+#include <string>
+#include <vector>
 
-class QuantumPhyEntity;
-class QuantumErrorModel;
-
-class QuantumMemory : public Object
+namespace ns3
 {
 
-private:
+/**
+ * @ingroup quantum
+ * An ordered list of qubit names.
+ *
+ * A QuantumNode keeps the qubits it owns in a memory. Applications also use
+ * memories to receive lists of qubits through the attribute system.
+ */
+class QuantumMemory : public Object
+{
+  public:
+    /**
+     * Get the type ID.
+     * @return The object TypeId.
+     */
+    static TypeId GetTypeId();
 
-  /** Names of the qubits in this quantum memory. */
-  std::vector<std::string> m_qubits;
+    QuantumMemory() = default;
 
-public:
+    /**
+     * Constructor.
+     *
+     * @param qubits Names of the qubits initially in the memory.
+     */
+    explicit QuantumMemory(const std::vector<std::string>& qubits);
 
-  QuantumMemory (std::vector<std::string> qubits_);
-  ~QuantumMemory ();
+    /**
+     * Append a qubit.
+     *
+     * @param qubit Name of the qubit.
+     */
+    void AddQubit(const std::string& qubit);
 
-  QuantumMemory ();
-  static TypeId GetTypeId ();
+    /**
+     * Remove a qubit.
+     *
+     * @param qubit Name of the qubit.
+     * @return True if the qubit was in the memory.
+     */
+    bool RemoveQubit(const std::string& qubit);
 
-  /**
-   * \brief Add a qubit to the quantum memory.
-   * \param qubit Name of the qubit to be added.
-  */
-  void AddQubit (std::string qubit);
+    /**
+     * Get the number of qubits.
+     *
+     * @return The number of qubits in the memory.
+     */
+    std::size_t GetSize() const;
 
-  /**
-   * \brief Remove a qubit from the quantum memory.
-   * \param qubit Name of the qubit to be removed.
-   * \return True if the qubit is successfully removed.
-  */
-  bool RemoveQubit (std::string qubit);
+    /**
+     * Get a qubit by position.
+     *
+     * @param index Position of the qubit in the memory.
+     * @return The name of the qubit.
+     */
+    std::string GetQubit(std::size_t index) const;
 
-  /**
-   * \brief Get the size of the quantum memory.
-   * \return Number of qubits in the quantum memory.
-  */
-  unsigned GetSize () const;
+    /**
+     * Get all qubits.
+     *
+     * @return The names of the qubits, in order.
+     */
+    std::vector<std::string> GetQubits() const;
 
-  /**
-   * \brief Get the qubit at a specific position.
-   * \param local The position in the quantum memory to query.
-   * \return Name of the qubit at the position.
-  */
-  std::string GetQubit (unsigned local) const;
+    /**
+     * Check whether a qubit is in the memory.
+     *
+     * @param qubit Name of the qubit.
+     * @return True if the qubit is in the memory.
+     */
+    bool HasQubit(const std::string& qubit) const;
 
-
-  /**
-   * \brief Check if a qubit is in the quantum memory.
-   * \param qubit Name of the qubit to be checked.
-   * \return True if the qubit is in the quantum memory.
-  */
-  bool ContainQubit (std::string qubit) const;
+  private:
+    std::vector<std::string> m_qubits; //!< Names of the qubits, in order
 };
 
 } // namespace ns3

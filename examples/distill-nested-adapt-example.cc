@@ -1,138 +1,113 @@
 /*
-  To run this example:
-  NS_LOG="QuantumNetworkSimulator=info:QuantumPhyEntity=info:DistillNestedAdaptApp=info:QuantumBasis=info" ./ns3 run distill-nested-adapt-example
-  Note that by setting DistillNestedAdaptApp=info:QuantumBasis=info,
-  the simulator logs the prob of seccess, the meas outcome of the flag qubit, and the final fidelity.
-*/
-#include "ns3/csma-module.h" // class CsmaHelper, NetDeviceContainer
-#include "ns3/internet-module.h" // class InternetStackHelper, Ipv6AddressHelper, Ipv6InterfaceContainer
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
-#include "ns3/quantum-basis.h"
-#include "ns3/quantum-network-simulator.h" // class QuantumNetworkSimulator
-#include "ns3/quantum-phy-entity.h" // class QuantumPhyEntity
-#include "ns3/quantum-node.h" // class QuantumNode
-#include "ns3/quantum-channel.h" // class QuantumChannel
-#include "ns3/distribute-epr-helper.h" // class DistributeEPRhelper, DistributeEPRDstHelper
-#include "ns3/quantum-net-stack-helper.h" // class QuantumNetStackHelper
+#include "ns3/core-module.h"
+#include "ns3/csma-module.h"
+#include "ns3/internet-module.h"
+#include "ns3/quantum-module.h"
 
-#include "ns3/distill-nested-adapt-app.h" // class DistillNestedAdaptApp
-#include "ns3/distill-nested-adapt-helper.h" // class DistillNestedAdaptHelper
+#include <iostream>
+#include <string>
+#include <vector>
+
+/**
+ * @file
+ * @ingroup quantum
+ * Distill Bell pairs between two nodes, level by level, exactly.
+ *
+ * DistillNestedAdaptApp folds the success of every round into a flag qubit
+ * instead of measuring. One run yields the exact probability that all rounds
+ * succeed and the exact fidelity of the distilled pair.
+ */
 
 using namespace ns3;
 
-NS_LOG_COMPONENT_DEFINE ("DistillNestedAdaptExample");
+NS_LOG_COMPONENT_DEFINE("DistillNestedAdaptExample");
 
-// N stands for the # of EPR pairs shared between Alice and Bob
+/// Set once the protocol has finished and its results have been printed.
+static bool g_finished = false;
 
-#define N (8)
-/*
-Evaluating tensor network of size 261
- in 8.22895 secs
-*/
-// #define N (16)
-/*
-Evaluating tensor network of size 549
- in 17.4536 secs
-*/
-// #define N (32)
-/*
-Evaluating tensor network of size 1125
- in 23.7538 secs
-*/
-// #define N (64)
-/*
-Evaluating tensor network of size 2277
- in 53.9866 secs
-*/
-// #define N (128)
-/*
-Evaluating tensor network of size 4581
- in 108.108 secs
-*/
+/**
+ * Print the exact results of the distillation. Sink of the Finished trace source.
+ *
+ * @param qphyent The quantum physical entity.
+ * @param app The application that finished.
+ */
+static void
+ReportDistillation(Ptr<QuantumPhyEntity> qphyent, Ptr<const QuantumApplication> app)
+{
+    // The flag qubit is 1 if every round succeeded. Post-selecting it returns
+    // that probability and conditions the state on success.
+    const double probability = qphyent->PostSelect("Alice", "Flag", 1);
+    std::cout << "Probability that all rounds succeed: " << probability << std::endl;
+    std::cout << "Fidelity of the distilled pair: " << qphyent->CalculateFidelity({"A0", "B0"})
+              << std::endl;
+    g_finished = true;
+}
 
 int
-main ()
+main(int argc, char* argv[])
 {
-  //
-  // Create a quantum physical entity with two nodes.
-  //
-  std::vector<std::string> owners = {"Alice", "Bob"};
-  Ptr<QuantumPhyEntity> qphyent = CreateObject<QuantumPhyEntity> (owners);
+    uint32_t nPairs = 8;
+    double fidelity = 0.95;
+    Time coherenceTime = Seconds(20);
 
-  //
-  // (Optional) Set the error models.
-  //
-  NodeContainer nodes;
-  Ptr<QuantumNode> alice = qphyent->GetNode ("Alice");
-  alice->SetTimeModel (2e1); // it's huge, because CC is slow and would cause too severe a dephase loss
-  nodes.Add (alice);
+    CommandLine cmd(__FILE__);
+    cmd.AddValue("nPairs", "Number of Bell pairs to distill, a power of two", nPairs);
+    cmd.AddValue("fidelity", "Fidelity of each distributed Bell pair", fidelity);
+    cmd.AddValue("coherenceTime", "Coherence time of the memories of both nodes", coherenceTime);
+    cmd.Parse(argc, argv);
 
-  Ptr<QuantumNode> bob = qphyent->GetNode ("Bob");
-  bob->SetTimeModel (2e1);
-  nodes.Add (bob);
+    // The classical network: all nodes on one CSMA segment, with IPv6.
+    NodeContainer nodes;
+    nodes.Create(2);
+    CsmaHelper csma;
+    csma.SetChannelAttribute("DataRate", DataRateValue(DataRate("1000kbps")));
+    csma.SetChannelAttribute("Delay", TimeValue(MicroSeconds(100)));
+    NetDeviceContainer devices = csma.Install(nodes);
+    InternetStackHelper internet;
+    internet.Install(nodes);
+    Ipv6AddressHelper addresses;
+    addresses.SetBase("2001:1::", Ipv6Prefix(64));
+    addresses.Assign(devices);
 
-  //
-  // Create a classical connection.
-  //
-  CsmaHelper csmaHelper;
-  csmaHelper.SetChannelAttribute ("DataRate", DataRateValue (DataRate ("1000kbps")));
-  csmaHelper.SetChannelAttribute ("Delay", TimeValue (MilliSeconds (1e-1)));
-  NetDeviceContainer devices = csmaHelper.Install (nodes);
+    // The quantum network on top of it.
+    const std::vector<std::string> owners{"Alice", "Bob"};
+    QuantumNetStackHelper stack;
+    Ptr<QuantumPhyEntity> qphyent =
+        stack.Install(nodes, owners, QuantumNetStackHelper::Connectivity::CHAIN);
 
-  InternetStackHelper stack;
-  stack.Install (nodes);
-  Ipv6AddressHelper address;
-  address.SetBase ("2001:1::", Ipv6Prefix (64));
-  Ipv6InterfaceContainer interfaces = address.Assign (devices);
+    qphyent->GetQuantumNode("Alice")->SetTimeModel(coherenceTime);
+    qphyent->GetQuantumNode("Bob")->SetTimeModel(coherenceTime);
+    Ptr<QuantumChannel> channel = CreateObject<QuantumChannel>("Alice", "Bob");
+    qphyent->SetDepolarModel(channel, fidelity);
 
-  unsigned rank = 0;
-  for (const std::string &owner : owners)
+    // Name the qubits of the pairs: A0, A1, ... at Alice and B0, B1, ... at Bob.
+    std::vector<std::string> aliceQubits;
+    std::vector<std::string> bobQubits;
+    for (uint32_t i = 0; i < nPairs; ++i)
     {
-      qphyent->SetOwnerAddress (owner, interfaces.GetAddress (rank, 1));
-      qphyent->SetOwnerRank (owner, rank);
-      ++rank;
+        aliceQubits.push_back("A" + std::to_string(i));
+        bobQubits.push_back("B" + std::to_string(i));
     }
 
-  //
-  // Install the quantum network stack.
-  //
-  QuantumNetStackHelper qstack;
-  qstack.Install (nodes);
+    DistillNestedAdaptHelper helper(qphyent, channel);
+    helper.SetAttribute("SrcQubits", PointerValue(CreateObject<QuantumMemory>(aliceQubits)));
+    helper.SetAttribute("DstQubits", PointerValue(CreateObject<QuantumMemory>(bobQubits)));
+    helper.SetAttribute("FlagQubit", StringValue("Flag"));
+    ApplicationContainer apps = helper.Install();
+    // What to report, and when: the success probability and the fidelity, once all rounds are done.
+    apps.Get(0)->TraceConnectWithoutContext("Finished",
+                                            MakeBoundCallback(&ReportDistillation, qphyent));
 
-  //
-  // Install the quantum applications.
-  //
-  Ptr<QuantumChannel> qconn = CreateObject<QuantumChannel> (alice, bob);
-  qconn->SetDepolarModel (0.95, qphyent);
+    // Each pair is allotted 10 ms, the default EprInterval.
+    Simulator::Stop(MilliSeconds(10) * (nPairs + 2));
+    Simulator::Run();
+    NS_ABORT_MSG_UNLESS(g_finished, "The protocol did not finish before the simulation stopped");
 
-  DistillNestedAdaptHelper helper (qphyent, false, qconn);
-
-  std::vector<std::string> qubits_alice = {};
-  std::vector<std::string> qubits_bob = {};
-  for (int i = 0; i < N; ++i)
-    {
-      qubits_alice.push_back ("A" + std::to_string (i));
-      qubits_bob.push_back ("B" + std::to_string (i));
-    }
-  Ptr<QuantumMemory> src_qubits = CreateObject<QuantumMemory> (qubits_alice);
-  Ptr<QuantumMemory> dst_qubits = CreateObject<QuantumMemory> (qubits_bob);
-
-  helper.SetAttribute ("SrcQubits", PointerValue (src_qubits));
-  helper.SetAttribute ("DstQubits", PointerValue (dst_qubits));
-  helper.SetAttribute ("FlagQubit", StringValue ("Flag"));
-
-  ApplicationContainer apps = helper.Install (alice);
-  Ptr<DistillNestedAdaptApp> distillSrcApp = apps.Get (0)->GetObject<DistillNestedAdaptApp> ();
-  apps.Start (Seconds (0.));
-  apps.Stop (Seconds (ETERNITY));
-
-  Simulator::Stop (Seconds (ETERNITY));
-  auto start = std::chrono::high_resolution_clock::now ();
-  Simulator::Run ();
-  auto end = std::chrono::high_resolution_clock::now ();
-  printf ("Total time cost: %ld s\n",
-          std::chrono::duration_cast<std::chrono::seconds> (end - start).count ());
-  Simulator::Destroy ();
-
-  return 0;
+    Simulator::Destroy();
+    return 0;
 }

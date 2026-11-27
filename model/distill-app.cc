@@ -1,321 +1,166 @@
-#include "ns3/distill-app.h"
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
-#include "ns3/quantum-basis.h"
-#include "ns3/quantum-network-simulator.h" // class QuantumNetworkSimulator
-#include "ns3/quantum-phy-entity.h" // class QuantumPhyEntity
-#include "ns3/quantum-node.h" // class QuantumNode
-#include "ns3/quantum-channel.h" // class QuantumChannel
-#include "ns3/distribute-epr-protocol.h" // class DistributeEPRSrcProtocol
+#include "distill-app.h"
 
-namespace ns3 {
+#include "distribute-epr-protocol.h"
+#include "quantum-channel.h"
+#include "quantum-phy-entity.h"
 
-NS_LOG_COMPONENT_DEFINE ("DistillApp");
+#include "ns3/abort.h"
+#include "ns3/log.h"
+#include "ns3/pair.h"
+#include "ns3/pointer.h"
+#include "ns3/simulator.h"
+#include "ns3/string.h"
 
-NS_OBJECT_ENSURE_REGISTERED (DistillApp);
-
-DistillApp::DistillApp (Ptr<QuantumPhyEntity> qphyent_, bool checker_, Ptr<QuantumChannel> conn_,
-                        const std::pair<std::string, std::string> &qubits_)
-    : m_qphyent (qphyent_),
-      m_checker (checker_),
-      m_conn (conn_),
-      m_qubits (qubits_),
-      m_win (false),
-      m_data (0),
-      m_dataSize (0)
+namespace ns3
 {
-  if (!m_checker)
-    { // Alice
-      m_pnode = m_conn->GetSrc (m_qphyent);
-      SetRemote (m_conn->GetDst (m_qphyent)->GetAddress (),
-                 m_conn->GetDst (m_qphyent)->GetNextPort ());
-      m_port = m_pnode->AllocPort ();
-    }
-  else
-    { // Bob
-      m_pnode = m_conn->GetDst (m_qphyent);
-      SetRemote (m_conn->GetSrc (m_qphyent)->GetAddress (),
-                 m_conn->GetSrc (m_qphyent)->GetNextPort () - 1);
-      m_port = m_pnode->AllocPort ();
-    }
-}
 
-DistillApp::~DistillApp ()
-{
-  if (m_data)
-    delete[] m_data;
-  m_data = 0;
-  m_dataSize = 0;
-}
+NS_LOG_COMPONENT_DEFINE("DistillApp");
 
-DistillApp::DistillApp ()
-    : m_qphyent (nullptr),
-      m_checker (false),
-      m_pnode (nullptr),
-      m_qubits ({"", ""}),
-      m_win (false),
-
-      m_port (9),
-      m_peerPort (9),
-      m_size (0),
-      m_data (0),
-      m_dataSize (0)
-{
-}
+NS_OBJECT_ENSURE_REGISTERED(DistillSrcApp);
 
 TypeId
-DistillApp::GetTypeId ()
+DistillSrcApp::GetTypeId()
 {
-  static TypeId tid =
-      TypeId ("ns3::DistillApp")
-          .SetParent<Application> ()
-          .AddConstructor<DistillApp> ()
-          .AddAttribute ("Port", "Port on which we listen for incoming packets.", UintegerValue (9),
-                         MakeUintegerAccessor (&DistillApp::m_port),
-                         MakeUintegerChecker<uint16_t> ())
-          .AddAttribute ("PeerAddress", "The destination Address of the outbound packets",
-                         AddressValue (), MakeAddressAccessor (&DistillApp::m_peerAddress),
-                         MakeAddressChecker ())
-          .AddAttribute ("PeerPort", "The destination port of the outbound packets",
-                         UintegerValue (9), MakeUintegerAccessor (&DistillApp::m_peerPort),
-                         MakeUintegerChecker<uint16_t> ())
-          .AddAttribute ("DataSize", "The amount of data to send in bytes", UintegerValue (0),
-                         MakeUintegerAccessor (&DistillApp::m_dataSize),
-                         MakeUintegerChecker<uint32_t> ())
-
-          .AddAttribute ("QPhyEntity", "The pointer to the quantum physical entity", PointerValue (),
-                         MakePointerAccessor (&DistillApp::m_qphyent),
-                         MakePointerChecker<QuantumPhyEntity> ())
-          .AddAttribute ("Checker", "Whether the owner is the checker (Bob) in the distillation",
-                         BooleanValue (false), MakeBooleanAccessor (&DistillApp::m_checker),
-                         MakeBooleanChecker ())
-          .AddAttribute ("PNode", "The pointer to the quantum node owning this app", PointerValue (),
-                         MakePointerAccessor (&DistillApp::m_pnode),
-                         MakePointerChecker<QuantumNode> ())
-          .AddAttribute ("QChannel", "The pointer to the quantum connection", PointerValue (),
-                         MakePointerAccessor (&DistillApp::m_conn),
-                         MakePointerChecker<QuantumChannel> ())
-          .AddAttribute ("EPRGoal", "The goal EPR pair of the distillation",
-                         PairValue<StringValue, StringValue> (),
-                         MakePairAccessor<StringValue, StringValue> (&DistillApp::m_epr_goal),
-                         MakePairChecker<StringValue, StringValue> ())
-          .AddAttribute ("EPRMeas", "The epr pair to be measured",
-                         PairValue<StringValue, StringValue> (),
-                         MakePairAccessor<StringValue, StringValue> (&DistillApp::m_epr_meas),
-                         MakePairChecker<StringValue, StringValue> ())
-          .AddAttribute ("Qubits", "The two qubits of this owner",
-                         PairValue<StringValue, StringValue> (),
-                         MakePairAccessor<StringValue, StringValue> (&DistillApp::m_qubits),
-                         MakePairChecker<StringValue, StringValue> ());
-  return tid;
+    static TypeId tid =
+        TypeId("ns3::DistillSrcApp")
+            .SetParent<QuantumApplication>()
+            .SetGroupName("Quantum")
+            .AddConstructor<DistillSrcApp>()
+            .AddAttribute("QChannel",
+                          "The quantum channel from Alice to Bob.",
+                          PointerValue(),
+                          MakePointerAccessor(&DistillSrcApp::m_channel),
+                          MakePointerChecker<QuantumChannel>())
+            .AddAttribute("EPRGoal",
+                          "The pair to keep: Alice's qubit and Bob's qubit.",
+                          PairValue<StringValue, StringValue>(),
+                          MakePairAccessor<StringValue, StringValue>(&DistillSrcApp::m_eprGoal),
+                          MakePairChecker<StringValue, StringValue>())
+            .AddAttribute("EPRMeas",
+                          "The pair to measure: Alice's qubit and Bob's qubit.",
+                          PairValue<StringValue, StringValue>(),
+                          MakePairAccessor<StringValue, StringValue>(&DistillSrcApp::m_eprMeas),
+                          MakePairChecker<StringValue, StringValue>())
+            .AddAttribute("StepInterval",
+                          "Time between the distribution of the first pair, the distribution "
+                          "of the second pair, and Alice's measurement.",
+                          TimeValue(MilliSeconds(100)),
+                          MakeTimeAccessor(&DistillSrcApp::m_interval),
+                          MakeTimeChecker(Time(0)));
+    return tid;
 }
 
 void
-DistillApp::Distillate ()
+DistillSrcApp::DoDispose()
 {
-  if (!m_checker)
-    { // Alice
-      Ptr<DistributeEPRSrcProtocol> dist_epr_src_app =
-          m_qphyent->GetConn2Apps (m_conn, APP_DIST_EPR)
-              .first->GetObject<DistributeEPRSrcProtocol> ();
-      Simulator::Schedule (Seconds (2.1), &DistributeEPRSrcProtocol::GenerateAndDistributeEPR,
-                           dist_epr_src_app, m_epr_goal);
-      
-      Simulator::Schedule (Seconds (2.2), &DistributeEPRSrcProtocol::GenerateAndDistributeEPR,
-                           dist_epr_src_app, m_epr_meas);
-      Simulator::Schedule (Seconds (2.3), &DistillApp::Send, this);
-    }
-  else
-    { // Bob
-    }
-}
-
-void
-DistillApp::SetRemote (Address ip, uint16_t port)
-{
-  m_peerAddress = ip;
-  m_peerPort = port;
-}
-
-
-void
-DistillApp::SetFill (std::string fill)
-{
-  uint32_t dataSize = fill.size () + 1;
-
-  if (dataSize != m_dataSize)
-    {
-      delete[] m_data;
-      m_data = new uint8_t[dataSize];
-      m_dataSize = dataSize;
-    }
-
-  memcpy (m_data, fill.c_str (), dataSize);
-
-  m_size = dataSize;
-}
-
-void
-DistillApp::SendPacket (Ptr<Packet> packet, Ipv6Address destination, uint16_t port)
-{
-  m_send_socket->Connect (Inet6SocketAddress (Ipv6Address::ConvertFrom (destination), port));
-  m_send_socket->Send (packet);
-}
-
-void
-DistillApp::Send ()
-{
-  if (!m_checker)
-    { // Alice
-      m_qphyent->ApplyGate (m_pnode->GetOwner (), QNS_GATE_PREFIX + "CNOT", {},
-                            {m_epr_meas.first, m_epr_goal.first});
-      std::pair<unsigned, std::vector<double>> outcome_A =
-          m_qphyent->Measure (m_pnode->GetOwner (), {m_epr_meas.first});
-      NS_LOG_LOGIC ("     => " << m_pnode << "'s qubit is measured to " << outcome_A.first);
-
-      std::string outcome_send = std::to_string (outcome_A.first);
-      SetFill (outcome_send);
-    }
-  else
-    { // Bob
-    }
-
-  Ptr<Packet> p;
-  if (m_dataSize)
-    {
-      NS_ASSERT_MSG (m_dataSize == m_size,
-                     "DistillApp::Send(): m_size and m_dataSize inconsistent");
-      NS_ASSERT_MSG (m_data, "DistillApp::Send(): m_dataSize but no m_data");
-
-      p = Create<Packet> (m_data, m_dataSize);
-    }
-  else
-    {
-      p = Create<Packet> (m_size);
-    }
-  SendPacket (p, Ipv6Address::ConvertFrom (m_peerAddress), m_peerPort);
-  NS_LOG_INFO (CYAN_CODE << "At time " << Simulator::Now ().As (Time::S) << " Node # "
-                         << m_send_socket->GetNode ()->GetId () << " sent \"" << m_data << "\" to "
-                         << Ipv6Address::ConvertFrom (m_peerAddress) << END_CODE);
-}
-
-void
-DistillApp::HandleRead (Ptr<Socket> socket)
-{
-  Ptr<Packet> packet;
-  Address from;
-  while ((packet = socket->RecvFrom (from)))
-    {
-      if (!m_qphyent)
-        continue;
-
-      unsigned size = packet->GetSize ();
-      uint8_t data[size];
-      packet->CopyData (data, size);
-
-      NS_LOG_INFO (GREEN_CODE << "At time " << Simulator::Now ().As (Time::S) << " Node # "
-                              << socket->GetNode ()->GetId () << " received \"" << data
-                              << "\" from " << Inet6SocketAddress::ConvertFrom (from).GetIpv6 ()
-                              << END_CODE);
-
-      if (!m_checker)
-        { // Alice
-          std::string msg_from_B = std::string (data, data + sizeof (data) / sizeof (data[0]));
-          if (strncmp (msg_from_B.c_str (), "win", 3) == 0)
-            {
-              NS_LOG_INFO (m_pnode << " finds out that DISTILL wins!\n");
-              m_win = true;
-            }
-          else if (strncmp (msg_from_B.c_str (), "lose", 4) == 0)
-            {
-              NS_LOG_INFO (m_pnode << " finds out that DISTILL loses!\n");
-              m_win = false;
-            }
-          std::vector<std::complex<double>> output;
-          // m_qphyent->PeekDM ("God", {m_epr_goal.first, m_epr_goal.second}, output);
-        }
-      else
-        { // Bob
-          unsigned outcome_A_recv = data[0] - '0';
-          m_qphyent->ApplyGate (m_pnode->GetOwner (), QNS_GATE_PREFIX + "CNOT", {},
-                                {m_qubits.second, m_qubits.first});
-          std::pair<unsigned, std::vector<double>> outcome_B =
-              m_qphyent->Measure (m_pnode->GetOwner (), {m_qubits.second});
-          NS_LOG_LOGIC ("     => " << m_pnode << "'s qubit is measured to " << outcome_B.first);
-
-          std::string msg_send = "";
-          if (outcome_A_recv == outcome_B.first)
-            { // same
-              NS_LOG_INFO (m_pnode << " finds out that DISTILL wins!\n");
-              msg_send = "win";
-              m_win = true;
-            }
-          else
-            { // different
-              NS_LOG_INFO (m_pnode << " finds out that DISTILL loses!\n");
-              msg_send = "lose";
-              m_win = false;
-            }
-          SetFill (msg_send);
-          Send ();
-        }
-    }
-}
-
-void
-DistillApp::SetEPRGoal (const std::pair<std::string, std::string> &epr_goal_)
-{
-  m_epr_goal = epr_goal_;
-}
-
-void
-DistillApp::SetEPRMeas (const std::pair<std::string, std::string> &epr_meas_)
-{
-  m_epr_meas = epr_meas_;
-}
-
-void
-DistillApp::SetQubits (const std::pair<std::string, std::string> &qubits_)
-{
-  m_qubits = qubits_;
+    NS_LOG_FUNCTION(this);
+    m_channel = nullptr;
+    QuantumApplication::DoDispose();
 }
 
 bool
-DistillApp::GetWin () const
+DistillSrcApp::IsDone() const
 {
-  return m_win;
+    return m_done;
+}
+
+bool
+DistillSrcApp::GetWin() const
+{
+    return m_done && m_win;
 }
 
 void
-DistillApp::SetupReceiveSocket (Ptr<Socket> socket, uint16_t port)
+DistillSrcApp::DoStartApplication()
 {
-  Inet6SocketAddress local = Inet6SocketAddress (Ipv6Address::GetAny (), port);
-  if (socket->Bind (local) == -1)
-    {
-      NS_FATAL_ERROR ("Failed to bind socket");
-    }
+    NS_LOG_FUNCTION(this);
+    auto distributor = DynamicCast<DistributeEprSrcProtocol>(
+        GetQuantumPhyEntity()->GetConn2Apps(m_channel, QNS_APP_DIST_EPR).first);
+    Simulator::ScheduleNow(&DistributeEprSrcProtocol::GenerateAndDistributeEpr,
+                           distributor,
+                           m_eprGoal);
+    Simulator::Schedule(m_interval,
+                        &DistributeEprSrcProtocol::GenerateAndDistributeEpr,
+                        distributor,
+                        m_eprMeas);
+    Simulator::Schedule(2 * m_interval, &DistillSrcApp::MeasureAndSend, this);
 }
 
 void
-DistillApp::StartApplication ()
+DistillSrcApp::MeasureAndSend()
 {
-  TypeId tid = TypeId::LookupByName ("ns3::UdpSocketFactory");
-  m_recv_socket = Socket::CreateSocket (GetNode (), tid);
-  SetupReceiveSocket (m_recv_socket, m_port);
-  m_recv_socket->SetRecvCallback (MakeCallback (&DistillApp::HandleRead, this));
+    NS_LOG_FUNCTION(this);
+    Ptr<QuantumPhyEntity> qphyent = GetQuantumPhyEntity();
+    const std::string owner = GetOwner();
+    qphyent->ApplyGate(owner, QNS_GATE_CNOT, {}, {m_eprMeas.first, m_eprGoal.first});
+    const unsigned outcome = qphyent->Measure(owner, m_eprMeas.first).outcome;
+    SendMessage(std::to_string(outcome));
+}
 
-  m_send_socket = Socket::CreateSocket (GetNode (), tid);
+void
+DistillSrcApp::HandleMessage(const std::string& message, const Address& from)
+{
+    NS_LOG_FUNCTION(this << message << from);
+    NS_ABORT_MSG_IF(message != "win" && message != "lose",
+                    "Malformed distillation verdict \"" << message << "\"");
+    m_done = true;
+    m_win = message == "win";
+    NotifyFinished();
+}
 
-  if (!m_checker)
-    {
-      NS_LOG_LOGIC ("DistillApp of Alice has peer address " << m_peerAddress << " and port "
-                                                      << m_peerPort);
-      Distillate ();
-    }
-  else
-    {
-      NS_LOG_LOGIC ("DistillApp of Bob has address " << m_pnode->GetAddress () << " and port "
-                                                     << m_port);
-    }
+NS_OBJECT_ENSURE_REGISTERED(DistillDstApp);
+
+TypeId
+DistillDstApp::GetTypeId()
+{
+    static TypeId tid =
+        TypeId("ns3::DistillDstApp")
+            .SetParent<QuantumApplication>()
+            .SetGroupName("Quantum")
+            .AddConstructor<DistillDstApp>()
+            .AddAttribute("Qubits",
+                          "Bob's qubit of the pair to keep and his qubit of the pair to measure.",
+                          PairValue<StringValue, StringValue>(),
+                          MakePairAccessor<StringValue, StringValue>(&DistillDstApp::m_qubits),
+                          MakePairChecker<StringValue, StringValue>());
+    return tid;
+}
+
+bool
+DistillDstApp::IsDone() const
+{
+    return m_done;
+}
+
+bool
+DistillDstApp::GetWin() const
+{
+    return m_done && m_win;
+}
+
+void
+DistillDstApp::HandleMessage(const std::string& message, const Address& from)
+{
+    NS_LOG_FUNCTION(this << message << from);
+    NS_ABORT_MSG_IF(message != "0" && message != "1",
+                    "Malformed distillation outcome \"" << message << "\"");
+    const unsigned outcomeAlice = message == "1" ? 1 : 0;
+
+    Ptr<QuantumPhyEntity> qphyent = GetQuantumPhyEntity();
+    const std::string owner = GetOwner();
+    qphyent->ApplyGate(owner, QNS_GATE_CNOT, {}, {m_qubits.second, m_qubits.first});
+    const unsigned outcomeBob = qphyent->Measure(owner, m_qubits.second).outcome;
+
+    m_done = true;
+    m_win = outcomeAlice == outcomeBob;
+    SendMessageTo(m_win ? "win" : "lose", from);
+    NotifyFinished();
 }
 
 } // namespace ns3

@@ -1,387 +1,436 @@
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
+
 #ifndef QUANTUM_PHY_ENTITY_H
 #define QUANTUM_PHY_ENTITY_H
 
-#include "ns3/quantum-basis.h"
-#include "ns3/quantum-network-simulator.h" // class QuantumNetworkSimulator
-#include "ns3/quantum-channel.h" // class QuantumChannel
+#include "quantum-basis.h"
+#include "quantum-network-simulator.h"
 
-#include <exatn.hpp> // exatn::numerics::TensorNetwork
+#include "ns3/nstime.h"
+#include "ns3/object.h"
+#include "ns3/ptr.h"
+#include "ns3/traced-callback.h"
 
-namespace ns3 {
+#include <map>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
-class Address;
-
-class QuantumNetworkSimulator;
-class QuantumOperation;
-class QuantumNode;
-class QuantumErrorModel;
+namespace ns3
+{
 
 class Application;
-class TelepSrcApp;
-class TelepDstApp;
-class DistillApp;
-class DistributeEPRSrcProtocol;
-class DistributeEPRDstProtocol;
+class Node;
+class QuantumChannel;
+class QuantumErrorModel;
+class QuantumMemory;
+class QuantumNode;
+class QuantumOperation;
+class UniformRandomVariable;
 
+/**
+ * @ingroup quantum
+ * The physical layer shared by all nodes of a quantum network.
+ *
+ * Entangled qubits have no state of their own, so the state of all qubits of
+ * the network lives in this one object rather than in the nodes. On top of the
+ * tensor-network engine, QuantumNetworkSimulator, the entity adds what makes
+ * the state physical:
+ *
+ * - ownership: a node may only act on the qubits in its own memory;
+ * - memory noise: before a qubit is touched, it suffers the noise accumulated
+ *   since it was last touched (TimeModel by default);
+ * - gate noise: a gate applied by a node is followed by noise on its qubits
+ *   (DephaseModel by default);
+ * - channel noise: a qubit that arrives over a quantum channel suffers the
+ *   noise of that channel (DepolarModel by default).
+ *
+ * The owner #QNS_GOD_OWNER is exempt from the ownership check and from gate
+ * noise.
+ */
 class QuantumPhyEntity : public Object
 {
-  friend class QuantumNode;
-  friend class TelepSrcApp;
-  friend class TelepDstApp;
-  friend class DistillApp;
-  friend class DistributeEPRSrcProtocol;
-  friend class DistributeEPRDstProtocol;
+  public:
+    /**
+     * Get the type ID.
+     * @return The object TypeId.
+     */
+    static TypeId GetTypeId();
 
-  friend class QuantumErrorModel;
-  friend class DephaseModel;
-  friend class TimeModel;
-  friend class DepolarModel;
+    QuantumPhyEntity();
+    ~QuantumPhyEntity() override;
 
-public:
-  QuantumPhyEntity (const std::vector<std::string> &owners); // names of the owners
+    /// @name Nodes
+    /// @{
 
-  ~QuantumPhyEntity ();
+    /**
+     * Make a node part of the quantum network.
+     *
+     * @param node The node.
+     * @param owner Unique owner name for the node.
+     * @return The QuantumNode created and aggregated to @p node.
+     */
+    Ptr<QuantumNode> AddNode(Ptr<Node> node, const std::string& owner);
 
-  QuantumPhyEntity ();
-  void DoDispose (void);
-  static TypeId GetTypeId (void);
+    /**
+     * Find a node by owner name.
+     *
+     * @param owner Owner name of the node.
+     * @return The quantum node.
+     */
+    Ptr<QuantumNode> GetQuantumNode(const std::string& owner) const;
 
+    /**
+     * Get the owner names of all nodes.
+     *
+     * @return The owner names, in the order the nodes were added.
+     */
+    std::vector<std::string> GetOwners() const;
 
-/* circuit */
+    /// @}
 
-  /**
-   * \brief Generate n qubits.
-   * 
-   * \internal Access control. Call QuantumNetworkSimulator. Set errors.
-   * 
-   * \param owner Owner generating the qubits.
-   * \param data State vector of the qubits.
-   * \param qubits Names of the qubits.
-   * \return True if the qubits are generated successfully.
-   * 
-   * \note The data size must be 2^n.
-   * \note The qubits size must be n.
-  */
-  bool GenerateQubitsPure (const std::string &owner,
-                       const std::vector<std::complex<double>> &data,
-                       const std::vector<std::string> &qubits 
-  );
+    /// @name Operations on qubits
+    /// @{
 
-  /**
-   * \brief Generate n qubits.
-   * 
-   * \internal Access control. Call QuantumNetworkSimulator. Set errors.
-   * 
-   * \param owner Owner generating the qubits.
-   * \param data Density matrix of the qubits.
-   * \param qubits Names of the qubits.
-   * \return True if the qubits are generated successfully.
-   * 
-   * \note The data size must be 2^n * 2^n.
-   * \note The qubits size must be n.
-  */
-  bool GenerateQubitsMixed (const std::string &owner,
-                       const std::vector<std::complex<double>> &data,
-                       const std::vector<std::string> &qubits 
-  );
-  /**
-   * \brief Apply a gate to the qubits.
-   * 
-   * \internal Access control. Update errors. Call QuantumNetworkSimulator.
-   * 
-   * \param owner Owner applying the gate.
-   * \param gate Name of the gate.
-   * \param data Data of the gate.
-   * \param qubits Names of the qubits.
-   * \return True if the gate is applied successfully.
-   * 
-   * \note If the gate is not a reserved one (defined in QBasis), the data size must be 2^n * 2^n.
-   * \note The qubits size must be n.
-  */
-  bool ApplyGate (const std::string &owner,
-                  const std::string &gate,
-                  const std::vector<std::complex<double>> &data,
-                  const std::vector<std::string> &qubits
-  );
+    /**
+     * Create qubits in a pure state and give them to an owner.
+     *
+     * @param owner Owner that creates the qubits.
+     * @param data State vector with 2^n entries, for n qubits.
+     * @param qubits Unique names of the n qubits.
+     */
+    void GenerateQubitsPure(const std::string& owner,
+                            const QuantumTensorData& data,
+                            const std::vector<std::string>& qubits);
 
-  /**
-   * \brief Apply a gate to the qubits.
-   * 
-   * \internal Call QuantumNetworkSimulator.
-   * 
-   * \param owner Owner applying the gate.
-   * \param gate Name of the gate.
-   * \param data Data of the gate.
-   * \param qubits Names of the qubits.
-   * \return True if the gate is applied successfully.
-  */
-  bool
-  ApplyOperation (const QuantumOperation &quantumOperation,
-                  const std::vector<std::string> &qubits
-  );
+    /**
+     * Create qubits in a mixed state and give them to an owner.
+     *
+     * @param owner Owner that creates the qubits.
+     * @param data Density matrix with 2^n * 2^n entries, for n qubits.
+     * @param qubits Unique names of the n qubits.
+     */
+    void GenerateQubitsMixed(const std::string& owner,
+                             const QuantumTensorData& data,
+                             const std::vector<std::string>& qubits);
 
-  /**
-   * \brief Apply a controlled operation to n qubits (control qubits and target qubits).
-   * 
-   * Apply a controlled operation to control qubits and target qubits,
-   * instead of applying some gate (the original gate) to the target qubits
-   * according to the measurement outcomes on the control qubits.
-   * 
-   * \internal Call QuantumNetworkSimulator. Update errors.
-   * 
-   * \param owner Owner applying the operation.
-   * \param orig_owner Owner of the original gate.
-   * \param orig_gate Name of the original gate.
-   * \param gate Name of the controlled gate.
-   * \param data Data of the controlled gate.
-   * \param control_qubits Names of the control qubits.
-   * \param target_qubits Names of the target qubits.
-   * \return True if the operation is applied successfully.
-   * 
-   * \note If the gate is not a reserved one (defined in QBasis), the data size must be 2^n * 2^n.
-  */
-  bool ApplyControlledOperation (
-      const std::string &orig_owner,
-      const std::string &orig_gate,
-      const std::string &gate,
-      const std::vector<std::complex<double>> &data, const std::vector<std::string> &control_qubits,
-      const std::vector<std::string> &target_qubits);
+    /**
+     * Create a Bell pair at the source of a quantum channel.
+     *
+     * @param channel The channel whose source creates the pair.
+     * @param epr Unique names of the two qubits.
+     */
+    void GenerateEpr(Ptr<QuantumChannel> channel, const std::pair<std::string, std::string>& epr);
 
-  /**
-   * \brief Measure n qubits.
-   * 
-   * \internal Access control. Update errors. Call QuantumNetworkSimulator.
-   * 
-   * \param owner Owner measuring the qubits. 
-   * \param qubits Names of the qubits to be measured.
-   * \return Measurement outcome and the probability distribution.
-  */ 
-  std::pair<unsigned, std::vector<double>>
-  Measure (const std::string &owner, const std::vector<std::string> &qubits);
+    /**
+     * Apply a gate, with memory noise before it and gate noise after it.
+     *
+     * @param owner Owner that applies the gate; it must own the qubits.
+     * @param gate Name of the gate.
+     * @param data Matrix of the gate; ignored for a built-in gate.
+     * @param qubits Names of the qubits the gate acts on.
+     */
+    void ApplyGate(const std::string& owner,
+                   const std::string& gate,
+                   const QuantumTensorData& data,
+                   const std::vector<std::string>& qubits);
 
+    /**
+     * Apply a quantum operation without any additional noise.
+     *
+     * @param operation The operation.
+     * @param qubits Names of the qubits the operation acts on.
+     */
+    void ApplyOperation(const QuantumOperation& operation, const std::vector<std::string>& qubits);
 
-  /**
-   * \brief Peek n qubits.
-   * 
-   * \internal Access control. Call QuantumNetworkSimulator.
-   * 
-   * \param owner Owner peeking the qubits
-   * \param qubits Names of the qubits to be peeked.
-   * \param dm Vector to store the density matrix of the qubits.
-   * \return Density matrix of the qubits.
-  */
-  std::vector<std::complex<double>>
-  PeekDM (const std::string &owner,
-          const std::vector<std::string> &qubits,
-          std::vector<std::complex<double>> &dm
-  );
+    /**
+     * Apply a controlled gate that stands in for a classically controlled gate.
+     *
+     * Control flow adaptation replaces "measure the control qubits, send the
+     * outcomes, apply the original gate to the target qubits if told so" by a
+     * single controlled gate. The noise is that of the original protocol:
+     * memory noise before the gate, then the noise of the original gate on the
+     * target qubits.
+     *
+     * @param origOwner Owner that would apply the original gate.
+     * @param origGate Name of the original gate.
+     * @param gate Name of the controlled gate.
+     * @param data Matrix of the controlled gate; ignored for a built-in gate.
+     * @param controlQubits Names of the control qubits.
+     * @param targetQubits Names of the target qubits.
+     */
+    void ApplyControlledOperation(const std::string& origOwner,
+                                  const std::string& origGate,
+                                  const std::string& gate,
+                                  const QuantumTensorData& data,
+                                  const std::vector<std::string>& controlQubits,
+                                  const std::vector<std::string>& targetQubits);
 
-  /**
-   * \brief Partial trace n qubits by simply connecting the two ends of their wires
-   * 
-   * \internal Update errors. Call QuantumNetworkSimulator.
-   * 
-   * \param qubits Names of the qubits to be traced out.
-   * \return True if the wires are connected successfully.
-  */
-  bool
-  PartialTrace (const std::vector<std::string> &qubits
-  );
+    /**
+     * Measure one qubit in the computational basis.
+     *
+     * @param owner Owner that measures; it must own the qubit.
+     * @param qubit Name of the qubit.
+     * @return The outcome and the probabilities of both outcomes.
+     */
+    QuantumMeasurement Measure(const std::string& owner, const std::string& qubit);
 
-  /**
-   * \brief Contract the tensor network to a single tensor.
-   * \return The density matrix of the tensor.
-  */
-  std::vector<std::complex<double>> Contract (const std::string &optimizer = "greed");
-  
-  /**
-   * \brief Get a pointer to a quantum node by its owner name.
-   * \return A pointer to a quantum node.
-  */
-  Ptr<QuantumNode> GetNode (const std::string &owner);
+    /**
+     * Condition the state on a measurement outcome of one qubit, without sampling.
+     *
+     * @param owner Owner that post-selects; it must own the qubit.
+     * @param qubit Name of the qubit.
+     * @param outcome The outcome to keep, 0 or 1; it must have a positive probability.
+     * @return The probability that a measurement would have given @p outcome.
+     */
+    double PostSelect(const std::string& owner, const std::string& qubit, unsigned outcome);
 
-  /**
-   * \brief Set the error model of a qubit.
-   * \param pmodel Pointer to the error model.
-   * \param qubit Name of the qubit.
-  */
-  void SetErrorModel (Ptr<QuantumErrorModel> pmodel, const std::string &qubit);
+    /**
+     * Compute the reduced density matrix of some qubits without disturbing them.
+     *
+     * @param owner Owner that asks; unless it is #QNS_GOD_OWNER, it must own the qubits.
+     * @param qubits Names of the n qubits.
+     * @return The density matrix, with 2^n * 2^n entries.
+     */
+    QuantumTensorData PeekDensityMatrix(const std::string& owner,
+                                        const std::vector<std::string>& qubits);
 
-  /**
-   * \brief Set a dephasing model to a gate of some owner.
-   * \param owner Owner to apply the gate.
-   * \param gate Name of the gate.
-   * \param rate Dephasing rate.
-  */
-  void SetDephaseModel (const std::string &owner, // node applying the gate
-                        const std::string &gate,
-                        double rate // dephasing rate of the gate of the node
-  );
+    /**
+     * Discard qubits, after applying their memory noise.
+     *
+     * @param qubits Names of the qubits to trace out.
+     */
+    void PartialTrace(const std::vector<std::string>& qubits);
 
-  /**
-   * \brief Apply a dephasing model for a n-qubit gate.
-   * \param owner Owner applying the gate.
-   * \param gate Name of the gate.
-   * \param qubits Names of the qubits to which the gate is applied.
-   * \param moment Time of the appliance.
-  */
-  void ApplyErrorModel (const std::string &owner, const std::string &gate,
-                        const std::vector<std::string> &qubits,
-                        const Time &moment = Simulator::Now ());
+    /**
+     * Contract the tensor network into a single tensor.
+     *
+     * @param optimizer Name of the contraction order optimizer; see
+     *                  QuantumNetworkSimulator::Contract().
+     * @return The density matrix of all remaining qubits.
+     */
+    QuantumTensorData Contract(const std::string& optimizer = "greed");
 
-  /**
-   * \brief Set a depolarizing model to a connection.
-   * \param conn The two owners distributing some EPR pair.
-   * \param fidel Fidelity of the distributed EPR pair.
-  */ 
-  void SetDepolarModel (
-      std::pair<std::string, std::string> conn,
-      double fidel
-  );
-  /**
-   * \brief Apply a depolarizing model for some EPR distribution.
-   * \param conn The two owners distributing the EPR pair.
-   * \param epr The two qubits of the EPR pair.
-  */
-  void ApplyErrorModel (std::pair<std::string, std::string> conn,
-                        const std::pair<std::string, std::string> &epr);
+    /**
+     * Compute the fidelity of two qubits with respect to the Bell state #QNS_BELL.
+     *
+     * @param epr Names of the two qubits.
+     * @return The fidelity.
+     */
+    double CalculateFidelity(const std::pair<std::string, std::string>& epr);
 
-  /**
-   * \brief Set a time model to a qubit.
-   * \param owner Owner generating the qubit.
-   * \param rate Dephasing rate of the time model.
-  */
-  void SetTimeModel (const std::string &owner,
-                     double rate
-  );
-  /**
-   * \brief Apply a time model for n qubits.
-   * \param qubits Names of the qubits.
-   * \param moment Time of the appliance.
-  */
-  void ApplyErrorModel (const std::vector<std::string> &qubits,
-                        const Time &moment = Simulator::Now ());
+    /**
+     * Mark the end of a subcircuit; see QuantumNetworkSimulator::Checkpoint().
+     */
+    void Checkpoint();
 
+    /**
+     * Allocate a name for an ancilla qubit.
+     *
+     * @return A name that no other qubit of this entity uses.
+     */
+    std::string AllocAncillaQubit();
 
-/* util */
+    /// @}
 
-  void Evaluate ();
-  
-  /**
-   * \brief Check if the qubits are valid (not traced out).
-   * 
-   * \internal Call QuantumNetworkSimulator.
-   * 
-   * \param qubits Names of the qubits to be checked.
-   * \return True if the qubits are all valid.
-  */
-  bool CheckValid (const std::vector<std::string> &qubits) const;
+    /// @name Noise
+    /// @{
 
-  /**
-   * \brief Check if the qubits are ownned by the owner.
-   * \param qubits Names of the qubits to be checked.
-   * \return True if the qubits are all in the owner's quantum memory.
-  */
-  bool CheckOwned (const std::string &owner, const std::vector<std::string> &qubits) const;
+    /**
+     * Set the memory noise of one qubit.
+     *
+     * @param model The noise model.
+     * @param qubit Name of the qubit.
+     */
+    void SetErrorModel(Ptr<QuantumErrorModel> model, const std::string& qubit);
 
+    /**
+     * Set the memory noise of the qubits that an owner generates from now on.
+     *
+     * @param owner Owner name.
+     * @param coherenceTime Coherence time of the memory; see TimeModel.
+     */
+    void SetTimeModel(const std::string& owner, Time coherenceTime);
 
+    /**
+     * Set the noise of a gate applied by an owner.
+     *
+     * @param owner Owner name.
+     * @param gate Name of the gate.
+     * @param coherenceTime Coherence time of the gate; see DephaseModel.
+     */
+    void SetDephaseModel(const std::string& owner, const std::string& gate, Time coherenceTime);
 
-/* network */
+    /**
+     * Set the noise of a quantum channel.
+     *
+     * @param channel The channel.
+     * @param fidelity Fidelity of a Bell pair distributed over the channel; see DepolarModel.
+     */
+    void SetDepolarModel(Ptr<QuantumChannel> channel, double fidelity);
 
-  /**
-   * \brief Generate a EPR pair.
-   * 
-   * \internal Call GenerateQubit ().
-   * 
-   * \param qconn The source node generates the EPR pair to distribute it to the destination.
-   * \param epr The two qubits of the EPR pair.
-  */
-  void GenerateEPR (Ptr<QuantumChannel> qconn, const std::pair<std::string, std::string> &epr);
+    /**
+     * Apply the noise of a quantum channel to a qubit that arrives over it.
+     *
+     * @param channel The channel.
+     * @param qubit Name of the qubit that crossed the channel.
+     */
+    void ApplyChannelNoise(Ptr<QuantumChannel> channel, const std::string& qubit);
 
-  double CalculateFidelity (const std::pair<std::string, std::string> &epr, double &fidel);
+    /// @}
 
-/* util */
+    /// @name Checks
+    /// @{
 
-  /**
-   * \brief Record the pointers to quantum applications of a connection.
-   * \param qconn The connection.
-   * \param protocol The protocol name of the connection.
-   * \param apps The pointers to the quantum applications.
-  */
-  void AddConn2Apps (Ptr<QuantumChannel> qconn, const std::string &protocol,
-                     const std::pair<Ptr<Application>, Ptr<Application>> &apps);
+    /**
+     * Check whether qubits exist and have not been traced out.
+     *
+     * @param qubits Names of the qubits.
+     * @return True if all of the qubits are valid.
+     */
+    bool CheckValid(const std::vector<std::string>& qubits) const;
 
-  /**
-   * \brief Get the pointers to quantum applications of a connection.
-   * \param qconn The connection.
-   * \param protocol The protocol name of the connection.
-   * \return The pointers to the quantum applications.  
-  */ 
-  std::pair<Ptr<Application>, Ptr<Application>> GetConn2Apps (Ptr<QuantumChannel> qconn,
-                                                              const std::string &protocol);
+    /**
+     * Check whether an owner owns qubits.
+     *
+     * @param owner Owner name.
+     * @param qubits Names of the qubits.
+     * @return True if @p owner is #QNS_GOD_OWNER or owns all of the qubits.
+     */
+    bool CheckOwned(const std::string& owner, const std::vector<std::string>& qubits) const;
 
-  /**
-   * \brief Set the network layer address of an owner.
-   * \param owner Name of the owner.
-   * \param address Network layer address of the owner.
-  */
-  void SetOwnerAddress (const std::string &owner, const Address &address);
+    /// @}
 
-  /**
-   * \brief Set the rank of an owner.
-   * \param owner Name of the owner.
-   * \param rank Rank of the owner in some certain subnet.
-  */
-  void SetOwnerRank (const std::string &owner, const unsigned &rank);
+    /// @name Applications of a connection
+    /// @{
 
-  /**
-   * \brief Help the "distill" optimizer to contract the tree of subcircuits.
-  */
-  void Checkpoint ();
+    /**
+     * Record the pair of applications that run a protocol over a channel.
+     *
+     * @param channel The channel.
+     * @param protocol Name of the protocol.
+     * @param apps The applications at the source and at the destination.
+     */
+    void AddConn2Apps(Ptr<QuantumChannel> channel,
+                      const std::string& protocol,
+                      const std::pair<Ptr<Application>, Ptr<Application>>& apps);
 
+    /**
+     * Check whether applications are recorded for a protocol over a channel.
+     *
+     * @param channel The channel.
+     * @param protocol Name of the protocol.
+     * @return True if AddConn2Apps() was called for the channel and the protocol.
+     */
+    bool HasConn2Apps(Ptr<QuantumChannel> channel, const std::string& protocol) const;
 
-/* debug */
-  
-  void PrintConn2Apps () const;
+    /**
+     * Find the pair of applications that run a protocol over a channel.
+     *
+     * @param channel The channel.
+     * @param protocol Name of the protocol.
+     * @return The applications at the source and at the destination.
+     */
+    std::pair<Ptr<Application>, Ptr<Application>> GetConn2Apps(Ptr<QuantumChannel> channel,
+                                                               const std::string& protocol) const;
 
-private:
+    /// @}
 
-/* circuit */
+    /**
+     * Assign a fixed random variable stream number to the random variable
+     * that picks measurement outcomes.
+     *
+     * @param stream First stream index to use.
+     * @return The number of stream indices assigned.
+     */
+    int64_t AssignStreams(int64_t stream);
 
-  /** Instance of a quantum network simulator. */
-  QuantumNetworkSimulator m_qnetsim;
-  
+    /**
+     * TracedCallback signature for a measurement.
+     *
+     * @param owner Owner that measured.
+     * @param qubit Name of the measured qubit.
+     * @param outcome The outcome, 0 or 1.
+     * @param probability Probability that the outcome had.
+     */
+    typedef void (*MeasureTracedCallback)(const std::string& owner,
+                                          const std::string& qubit,
+                                          unsigned outcome,
+                                          double probability);
 
+  protected:
+    void DoDispose() override;
+    void NotifyConstructionCompleted() override;
 
-/* network */
+  private:
+    /**
+     * Get the memory of an owner.
+     *
+     * @param owner Owner name, possibly #QNS_GOD_OWNER.
+     * @return The memory holding the qubits of the owner.
+     */
+    Ptr<QuantumMemory> GetMemory(const std::string& owner) const;
 
-  /** Map from owner name to the pointer to its quantum node. */
-  std::map<std::string, Ptr<QuantumNode>> m_owner2pnode;
+    /**
+     * Do the bookkeeping for newly created qubits.
+     *
+     * @param owner Owner that created the qubits.
+     * @param qubits Names of the qubits.
+     */
+    void RegisterQubits(const std::string& owner, const std::vector<std::string>& qubits);
 
-  /** Map from quantum channel and a quantum application name
-   * to the pointers to the applications. */
-  std::map<QuantumChannel, std::map<std::string, std::pair<Ptr<Application>, Ptr<Application>>>>
-      m_conn2apps;
+    /**
+     * Apply to a qubit the memory noise accumulated since it was last touched.
+     *
+     * @param qubit Name of the qubit.
+     */
+    void ApplyMemoryNoise(const std::string& qubit);
 
-  /** Map from qubit name to the last time it was operated. */
-  std::map<std::string, Time> m_qubit2time; 
+    /**
+     * Apply to qubits the noise of a gate.
+     *
+     * @param owner Owner that applied the gate.
+     * @param gate Name of the gate.
+     * @param qubits Names of the qubits the gate acted on.
+     */
+    void ApplyGateNoise(const std::string& owner,
+                        const std::string& gate,
+                        const std::vector<std::string>& qubits);
 
+    std::unique_ptr<QuantumNetworkSimulator> m_engine; //!< Joint state of all qubits
 
-  /** Map from pointer to a quantum node (i.e. a owner)
-   * to the pointer to the time relevant error model of the qubits generated by the owner. */
-  std::map<Ptr<QuantumNode>, Ptr<QuantumErrorModel>> m_node2model;
+    std::vector<std::string> m_owners;               //!< Owner names, in order of addition
+    std::map<std::string, Ptr<QuantumNode>> m_nodes; //!< Node of each owner
+    Ptr<QuantumMemory> m_godMemory;                  //!< Qubits created by QNS_GOD_OWNER
+    uint32_t m_ancillaCount{0};                      //!< Number of ancilla names allocated
 
-  /** Map from qubit name to the pointer to its time relevant error model. */
-  std::map<std::string, Ptr<QuantumErrorModel>> m_qubit2model;
+    Ptr<QuantumErrorModel> m_defaultTimeModel;    //!< Memory noise unless set otherwise
+    Ptr<QuantumErrorModel> m_defaultDephaseModel; //!< Gate noise unless set otherwise
+    Ptr<QuantumErrorModel> m_defaultDepolarModel; //!< Channel noise unless set otherwise
 
-  /** Map from pointer to a quantum node (i.e. a owner) and some gate name
-   * to the pointer to the dephasing error model of the gate. */
-  std::map<Ptr<QuantumNode>, std::map<std::string, Ptr<QuantumErrorModel>>>
-      m_gate2model;
+    std::map<std::string, Time> m_qubitTime; //!< When each qubit was last touched
+    std::map<std::string, Ptr<QuantumErrorModel>> m_qubitModel; //!< Memory noise of each qubit
+    std::map<std::string, Ptr<QuantumErrorModel>>
+        m_ownerModel; //!< Memory noise of new qubits, per owner
+    /// Gate noise, per owner and gate.
+    std::map<std::pair<std::string, std::string>, Ptr<QuantumErrorModel>> m_gateModel;
+    /// Channel noise, per source and destination.
+    std::map<std::pair<std::string, std::string>, Ptr<QuantumErrorModel>> m_channelModel;
 
-  /** Map from a quantum connection to its depolarizing error model. */
-  std::map<std::pair<std::string, std::string>, Ptr<QuantumErrorModel>>
-      m_conn2model;
+    /// Applications per channel (source, destination) and protocol.
+    std::map<std::pair<std::pair<std::string, std::string>, std::string>,
+             std::pair<Ptr<Application>, Ptr<Application>>>
+        m_apps;
+
+    Ptr<UniformRandomVariable> m_random; //!< Picks measurement outcomes
+
+    /// Trace fired at each measurement.
+    TracedCallback<const std::string&, const std::string&, unsigned, double> m_measureTrace;
 };
 
 } // namespace ns3

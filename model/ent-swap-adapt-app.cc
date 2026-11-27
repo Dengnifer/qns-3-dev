@@ -1,129 +1,155 @@
-#include "ns3/ent-swap-adapt-app.h"
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
-#include "ns3/quantum-basis.h"
-#include "ns3/quantum-network-simulator.h" // class QuantumNetworkSimulator
-#include "ns3/quantum-phy-entity.h" // class QuantumPhyEntity
-#include "ns3/quantum-node.h" // class QuantumNode
-#include "ns3/quantum-memory.h" // class QuantumMemory
+#include "ent-swap-adapt-app.h"
 
-namespace ns3 {
+#include "quantum-memory.h"
+#include "quantum-phy-entity.h"
 
-NS_LOG_COMPONENT_DEFINE ("EntSwapAdaptApp");
+#include "ns3/abort.h"
+#include "ns3/log.h"
+#include "ns3/pointer.h"
+#include "ns3/simulator.h"
 
-NS_OBJECT_ENSURE_REGISTERED (EntSwapAdaptApp);
-
-EntSwapAdaptApp::EntSwapAdaptApp (Ptr<QuantumPhyEntity> qphyent_,
-                                  Ptr<QuantumMemory> qubits_former_,
-                                  Ptr<QuantumMemory> qubits_latter_)
-    : m_qphyent (qphyent_),
-      m_qubits_former (qubits_former_),
-      m_qubits_latter (qubits_latter_)
+namespace ns3
 {
-}
 
-EntSwapAdaptApp::~EntSwapAdaptApp ()
-{
-}
+NS_LOG_COMPONENT_DEFINE("EntSwapAdaptApp");
 
-EntSwapAdaptApp::EntSwapAdaptApp ()
-    : m_qphyent (nullptr), m_qubits_former (nullptr), m_qubits_latter (nullptr)
-{
-}
+NS_OBJECT_ENSURE_REGISTERED(EntSwapAdaptApp);
 
 TypeId
-EntSwapAdaptApp::GetTypeId ()
+EntSwapAdaptApp::GetTypeId()
 {
-  static TypeId tid =
-      TypeId ("ns3::EntSwapAdaptApp")
-          .AddConstructor<EntSwapAdaptApp> ()
-          .SetParent<Application> ()
-          .AddAttribute ("QPhyEntity", "The pointer to the quantum physical entity", PointerValue (),
-                         MakePointerAccessor (&EntSwapAdaptApp::m_qphyent),
-                         MakePointerChecker<QuantumPhyEntity> ())
-          .AddAttribute ("QubitsFormer", "The pointer to the former qubits of each owner",
-                         PointerValue (),
-                         MakePointerAccessor (&EntSwapAdaptApp::m_qubits_former),
-                         MakePointerChecker<QuantumMemory> ())
-          .AddAttribute ("QubitsLatter", "The pointer to the latter qubits of each owner",
-                         PointerValue (),
-                         MakePointerAccessor (&EntSwapAdaptApp::m_qubits_latter),
-                         MakePointerChecker<QuantumMemory> ())
-          ;
-  return tid;
+    static TypeId tid = TypeId("ns3::EntSwapAdaptApp")
+                            .SetParent<QuantumApplication>()
+                            .SetGroupName("Quantum")
+                            .AddConstructor<EntSwapAdaptApp>()
+                            .AddAttribute("QubitsFormer",
+                                          "Per node, the qubit entangled with the previous node.",
+                                          PointerValue(),
+                                          MakePointerAccessor(&EntSwapAdaptApp::m_qubitsFormer),
+                                          MakePointerChecker<QuantumMemory>())
+                            .AddAttribute("QubitsLatter",
+                                          "Per node, the qubit entangled with the next node.",
+                                          PointerValue(),
+                                          MakePointerAccessor(&EntSwapAdaptApp::m_qubitsLatter),
+                                          MakePointerChecker<QuantumMemory>());
+    return tid;
 }
 
 void
-EntSwapAdaptApp::EntanglementSwapping ()
+EntSwapAdaptApp::DoDispose()
 {
-  std::string flag_x = AllocAncillaQubit ();
-  std::string flag_z = AllocAncillaQubit ();
-  Simulator::ScheduleNow (&QuantumPhyEntity::GenerateQubitsPure, m_qphyent,
-                          "God", q_ket_0, std::vector<std::string>{flag_x});
-  Simulator::ScheduleNow (&QuantumPhyEntity::GenerateQubitsPure, m_qphyent,
-                          "God", q_ket_0, std::vector<std::string>{flag_z});
+    NS_LOG_FUNCTION(this);
+    m_qubitsFormer = nullptr;
+    m_qubitsLatter = nullptr;
+    QuantumApplication::DoDispose();
+}
 
-  std::string last_qubit = m_qubits_former->GetQubit (m_qubits_former->GetSize () - 1);
-  
-  for (unsigned rank = 1; rank < m_qubits_former->GetSize () - 1; ++rank)
+void
+EntSwapAdaptApp::DoStartApplication()
+{
+    NS_LOG_FUNCTION(this);
+    Simulator::ScheduleNow(&EntSwapAdaptApp::EntanglementSwapping, this);
+}
+
+void
+EntSwapAdaptApp::EntanglementSwapping()
+{
+    NS_LOG_FUNCTION(this);
+    NS_ABORT_MSG_UNLESS(m_qubitsFormer && m_qubitsLatter &&
+                            m_qubitsFormer->GetSize() == m_qubitsLatter->GetSize() &&
+                            m_qubitsFormer->GetSize() >= 2,
+                        "QubitsFormer and QubitsLatter must name the qubits of the same nodes");
+    Ptr<QuantumPhyEntity> qphyent = GetQuantumPhyEntity();
+    const std::size_t nNodes = m_qubitsFormer->GetSize();
+    const std::string lastQubit = m_qubitsFormer->GetQubit(nNodes - 1);
+
+    // The ancillas accumulate the parity of the X and Z flags of all repeaters.
+    const std::string flagX = qphyent->AllocAncillaQubit();
+    const std::string flagZ = qphyent->AllocAncillaQubit();
+    Simulator::ScheduleNow(&QuantumPhyEntity::GenerateQubitsPure,
+                           qphyent,
+                           QNS_GOD_OWNER,
+                           QNS_KET_0,
+                           std::vector<std::string>{flagX});
+    Simulator::ScheduleNow(&QuantumPhyEntity::GenerateQubitsPure,
+                           qphyent,
+                           QNS_GOD_OWNER,
+                           QNS_KET_0,
+                           std::vector<std::string>{flagZ});
+
+    for (std::size_t rank = 1; rank + 1 < nNodes; ++rank)
     {
-      std::pair<std::string, std::string> qubits = {
-        m_qubits_former->GetQubit (rank), m_qubits_latter->GetQubit (rank)};
-      NS_LOG_LOGIC ("Owner " << rank << " has qubits " << qubits.first << " " << qubits.second);
+        const std::string former = m_qubitsFormer->GetQubit(rank);
+        const std::string latter = m_qubitsLatter->GetQubit(rank);
 
-      // local operations
-      Simulator::ScheduleNow (&QuantumPhyEntity::ApplyGate, m_qphyent,
-                              "God", QNS_GATE_PREFIX + "CNOT",
-                              std::vector<std::complex<double>>{},
-                              std::vector<std::string>{qubits.second, qubits.first});
-      Simulator::ScheduleNow (&QuantumPhyEntity::ApplyGate, m_qphyent,
-                              "God", QNS_GATE_PREFIX + "H",
-                              std::vector<std::complex<double>>{},
-                              std::vector<std::string>{qubits.first});
+        // Rotate the two qubits of the repeater into the Bell basis.
+        Simulator::ScheduleNow(&QuantumPhyEntity::ApplyGate,
+                               qphyent,
+                               QNS_GOD_OWNER,
+                               QNS_GATE_CNOT,
+                               QuantumTensorData{},
+                               std::vector<std::string>{latter, former});
+        Simulator::ScheduleNow(&QuantumPhyEntity::ApplyGate,
+                               qphyent,
+                               QNS_GOD_OWNER,
+                               QNS_GATE_H,
+                               QuantumTensorData{},
+                               std::vector<std::string>{former});
 
-      // God apply control operations
-      Simulator::ScheduleNow (&QuantumPhyEntity::ApplyGate, m_qphyent,
-                              "God", QNS_GATE_PREFIX + "CNOT",
-                              std::vector<std::complex<double>>{},
-                              std::vector<std::string>{flag_x, qubits.second});
-      // the latter qubit not used anymore
-      Simulator::ScheduleNow (&QuantumPhyEntity::PartialTrace, m_qphyent,
-                                std::vector<std::string>{qubits.second});
-
-      Simulator::ScheduleNow(&QuantumPhyEntity::ApplyGate, m_qphyent,
-                              "God", QNS_GATE_PREFIX + "CNOT",
-                              std::vector<std::complex<double>>{},
-                              std::vector<std::string>{flag_z, qubits.first});
-      // the former qubit not used anymore
-      Simulator::ScheduleNow (&QuantumPhyEntity::PartialTrace, m_qphyent,
-                                std::vector<std::string>{qubits.first});
+        // Fold its flags into the ancillas, then discard its qubits.
+        Simulator::ScheduleNow(&QuantumPhyEntity::ApplyGate,
+                               qphyent,
+                               QNS_GOD_OWNER,
+                               QNS_GATE_CNOT,
+                               QuantumTensorData{},
+                               std::vector<std::string>{flagX, latter});
+        Simulator::ScheduleNow(&QuantumPhyEntity::PartialTrace,
+                               qphyent,
+                               std::vector<std::string>{latter});
+        Simulator::ScheduleNow(&QuantumPhyEntity::ApplyGate,
+                               qphyent,
+                               QNS_GOD_OWNER,
+                               QNS_GATE_CNOT,
+                               QuantumTensorData{},
+                               std::vector<std::string>{flagZ, former});
+        Simulator::ScheduleNow(&QuantumPhyEntity::PartialTrace,
+                               qphyent,
+                               std::vector<std::string>{former});
     }
 
-  // God apply control operations
-  Simulator::ScheduleNow (&QuantumPhyEntity::ApplyControlledOperation, m_qphyent,
-                          GetNode ()->GetObject<QuantumNode> ()->GetOwner (), QNS_GATE_PREFIX + "PX",
-                          QNS_GATE_PREFIX + "CX", cnot,
-                          std::vector<std::string>{flag_x},
-                          std::vector<std::string>{last_qubit});
-                          
-  // flag x not used anymore
-  Simulator::ScheduleNow (&QuantumPhyEntity::PartialTrace, m_qphyent,
-                          std::vector<std::string>{flag_x});    
+    // The corrections of the last node, controlled by the ancillas.
+    const std::string owner = GetOwner();
+    Simulator::ScheduleNow(&QuantumPhyEntity::ApplyControlledOperation,
+                           qphyent,
+                           owner,
+                           QNS_GATE_PX,
+                           QNS_GATE_CNOT,
+                           QuantumTensorData{},
+                           std::vector<std::string>{flagX},
+                           std::vector<std::string>{lastQubit});
+    Simulator::ScheduleNow(&QuantumPhyEntity::PartialTrace,
+                           qphyent,
+                           std::vector<std::string>{flagX});
+    Simulator::ScheduleNow(&QuantumPhyEntity::ApplyControlledOperation,
+                           qphyent,
+                           owner,
+                           QNS_GATE_PZ,
+                           QNS_GATE_CZ,
+                           QuantumTensorData{},
+                           std::vector<std::string>{flagZ},
+                           std::vector<std::string>{lastQubit});
+    Simulator::ScheduleNow(&QuantumPhyEntity::PartialTrace,
+                           qphyent,
+                           std::vector<std::string>{flagZ});
 
-  Simulator::ScheduleNow (&QuantumPhyEntity::ApplyControlledOperation, m_qphyent,
-                          GetNode ()->GetObject<QuantumNode> ()->GetOwner (), QNS_GATE_PREFIX + "PZ",
-                          QNS_GATE_PREFIX + "CZ", std::vector<std::complex<double>>{},
-                          std::vector<std::string>{flag_z},
-                          std::vector<std::string>{last_qubit});
-  // flag z not used anymore
-  Simulator::ScheduleNow (&QuantumPhyEntity::PartialTrace, m_qphyent,
-                          std::vector<std::string>{flag_z});
-  Simulator::ScheduleNow (&QuantumPhyEntity::Contract, m_qphyent, "greed");
-}
-
-void
-EntSwapAdaptApp::StartApplication ()
-{
-  Simulator::ScheduleNow (&EntSwapAdaptApp::EntanglementSwapping, this);
+    Simulator::ScheduleNow(&QuantumPhyEntity::Contract, qphyent, std::string("greed"));
+    Simulator::ScheduleNow(&EntSwapAdaptApp::NotifyFinished, this);
 }
 
 } // namespace ns3

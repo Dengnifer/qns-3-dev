@@ -1,171 +1,137 @@
-/* 
-  To run this example:
-  NS_LOG="QuantumBasis=info:QuantumNetworkSimulator=info:EntSwapAdaptApp=logic:DistributeEPRProtocol=info:QuantumNode=info" ./ns3 run ent-swap-example
-*/
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
-#include "ns3/csma-module.h" // class CsmaHelper, NetDeviceContainer
-#include "ns3/internet-module.h" // class InternetStackHelper, Ipv6AddressHelper, Ipv6InterfaceContainer
-
-#include "ns3/quantum-basis.h"
-#include "ns3/quantum-network-simulator.h" // class QuantumNetworkSimulator
-#include "ns3/quantum-phy-entity.h" // class QuantumPhyEntity
-#include "ns3/quantum-node.h" // class QuantumNode
-#include "ns3/quantum-channel.h" // class QuantumChannel
-#include "ns3/distribute-epr-helper.h" // class DistributeEPRSrcHelper, DistributeEPRDstHelper
-#include "ns3/distribute-epr-protocol.h" // class DistributeEPRSrcProtocol
-#include "ns3/quantum-net-stack-helper.h" // class QuantumNetStackHelper
-#include "ns3/ent-swap-helper.h" // class EntSwapHelper
-#include "ns3/ent-swap-app.h" // class EntSwapApp
+#include "ns3/core-module.h"
+#include "ns3/csma-module.h"
+#include "ns3/internet-module.h"
+#include "ns3/quantum-module.h"
 
 #include <iostream>
-#include <cmath>
-#include <complex>
+#include <string>
+#include <vector>
 
-NS_LOG_COMPONENT_DEFINE ("EntSwapExample");
+/**
+ * @file
+ * @ingroup quantum
+ * Swap entanglement along a chain of nodes, sampling every measurement.
+ *
+ * Neighboring nodes share Bell pairs. Every repeater node measures its two
+ * qubits with EntSwapSrcApp and reports to the last node, whose EntSwapDstApp
+ * applies the corrections. The first and the last node end up sharing a pair.
+ */
 
 using namespace ns3;
 
-/* 
-  Without any adaptation, 
-  linearly measurements/contractions are performed, and
-  the time cost of contraction scales exponentially with N, the number of owners:
-*/
+NS_LOG_COMPONENT_DEFINE("EntSwapExample");
 
-#define N (4)
-/*
-Last round cost:
-  Evaluating tensor network of size 53 in 1.74639 secs
-  Evaluating tensor network of size 51 in 1.7396 secs
-Total time cost: 5 s
-*/
-// #define N (8)
-/*
-Last round cost:
-  Evaluating tensor network of size 195 in 7.71973 secs
-  Evaluating tensor network of size 197 in 7.99151 secs
-Total time cost: 38 s
-*/
-// #define N (16)
-/*
-Last round cost:
-  Evaluating tensor network of size 675 in 67.8974 secs
-  Evaluating tensor network of size 677 in 68.1694 secs
-Total time cost: 1027 s
-*/
+/// Set once the protocol has finished and its results have been printed.
+static bool g_finished = false;
+
+/**
+ * Print the fidelity of the final pair. Sink of the Finished trace source.
+ *
+ * @param qphyent The quantum physical entity.
+ * @param pair Names of the qubits of the first and of the last node.
+ * @param app The application that finished.
+ */
+static void
+ReportFidelity(Ptr<QuantumPhyEntity> qphyent,
+               const std::pair<std::string, std::string>& pair,
+               Ptr<const QuantumApplication> app)
+{
+    std::cout << "Fidelity of the pair shared by the first and the last node: "
+              << qphyent->CalculateFidelity(pair) << std::endl;
+    g_finished = true;
+}
 
 int
-main ()
+main(int argc, char* argv[])
 {
-  //
-  // Create a quantum physical entity with N nodes.
-  //
-  std::vector<std::string> owners = {};
-  for (int i = 0; i < N; ++i)
+    uint32_t nNodes = 4;
+    double fidelity = 0.95;
+    Time swapInterval = MilliSeconds(500);
+
+    CommandLine cmd(__FILE__);
+    cmd.AddValue("nNodes", "Number of nodes of the chain", nNodes);
+    cmd.AddValue("fidelity", "Fidelity of each distributed Bell pair", fidelity);
+    cmd.AddValue("swapInterval",
+                 "Time between the measurements of two consecutive repeaters",
+                 swapInterval);
+    cmd.Parse(argc, argv);
+    NS_ABORT_MSG_IF(nNodes < 3, "The chain needs at least 3 nodes");
+
+    // The classical network: all nodes on one CSMA segment, with IPv6.
+    NodeContainer nodes;
+    nodes.Create(nNodes);
+    CsmaHelper csma;
+    csma.SetChannelAttribute("DataRate", DataRateValue(DataRate("1000kbps")));
+    csma.SetChannelAttribute("Delay", TimeValue(MicroSeconds(100)));
+    NetDeviceContainer devices = csma.Install(nodes);
+    InternetStackHelper internet;
+    internet.Install(nodes);
+    Ipv6AddressHelper addresses;
+    addresses.SetBase("2001:1::", Ipv6Prefix(64));
+    addresses.Assign(devices);
+
+    // The quantum network on top of it.
+    std::vector<std::string> owners;
+    owners.reserve(nNodes);
+    for (uint32_t i = 0; i < nNodes; ++i)
     {
-      owners.push_back ("Owner" + std::to_string (i));
+        owners.push_back("Owner" + std::to_string(i));
     }
-  Ptr<QuantumPhyEntity> qphyent = CreateObject<QuantumPhyEntity> (owners);
+    QuantumNetStackHelper stack;
+    Ptr<QuantumPhyEntity> qphyent =
+        stack.Install(nodes, owners, QuantumNetStackHelper::Connectivity::CHAIN);
 
-  NodeContainer nodes;
-  for (int i = 0; i < N; ++i)
+    // Name the qubits: node i shares "former" with node i - 1 and "latter" with node i + 1.
+    std::vector<std::string> former;
+    std::vector<std::string> latter;
+    for (uint32_t i = 0; i < nNodes; ++i)
     {
-      Ptr<QuantumNode> node = qphyent->GetNode ("Owner" + std::to_string (i));
-      nodes.Add (node);
-    }
-
-  //
-  // Create a classical connection.
-  //
-  CsmaHelper csmaHelper;
-  csmaHelper.SetChannelAttribute ("DataRate", DataRateValue (DataRate ("1000kbps")));
-  csmaHelper.SetChannelAttribute ("Delay",
-                                  TimeValue (MilliSeconds (CLASSICAL_DELAY)));
-  NetDeviceContainer devices = csmaHelper.Install (nodes); 
-
-  InternetStackHelper stack;
-  stack.Install (nodes);
-  Ipv6AddressHelper address;
-  address.SetBase ("2001:1::", Ipv6Prefix (64));
-  Ipv6InterfaceContainer interfaces = address.Assign (devices); 
-
-  unsigned rank = 0;
-  for (const std::string &owner : owners)
-    {
-      qphyent->SetOwnerAddress (owner, interfaces.GetAddress (rank, 1));
-      qphyent->SetOwnerRank (owner, rank);
-      ++rank;
-    }
-
-  //
-  // Install the quantum network stack.
-  //
-  QuantumNetStackHelper qstack;
-  qstack.Install (nodes);
-
-  //
-  // Install the quantum applications.
-  //
-
-  //
-  // Every node but the last one generates and shares a EPR pair with the next
-  //
-  for (int rank = 0; rank < N - 1; ++rank) {
-    std::string srcOwner = "Owner" + std::to_string (rank);
-    std::string dstOwner = "Owner" + std::to_string (rank + 1);
-    Ptr<QuantumChannel> qconn = CreateObject<QuantumChannel> (srcOwner, dstOwner);
-    // generate and distribute EPR
-    Ptr<DistributeEPRSrcProtocol> dist_epr_src_app =
-        qphyent->GetConn2Apps (qconn, APP_DIST_EPR).first->GetObject<DistributeEPRSrcProtocol> ();
-    Simulator::Schedule (Seconds(CLASSICAL_DELAY), &DistributeEPRSrcProtocol::GenerateAndDistributeEPR,
-                         dist_epr_src_app, std::pair<std::string, std::string>{
-                          "Owner" + std::to_string (rank) + "_QubitEntToOwner"+ std::to_string (rank + 1),
-                          "Owner" + std::to_string (rank + 1) + "_QubitEntFromOwner"+ std::to_string (rank)});
-  }
-
-
-  //
-  // Setup the N - 2 entanglement swappings
-  //
-  std::string dstOwner = "Owner" + std::to_string (N - 1);
-  for (int rank = 1; rank < N - 1; ++rank)
-    {
-      std::string srcOwner = "Owner" + std::to_string (rank);
-
-      Ptr<QuantumChannel> qconn = CreateObject<QuantumChannel> (srcOwner, dstOwner);
-
-      EntSwapSrcHelper srcHelper (qphyent, qconn);
-      srcHelper.SetAttribute ("Qubits", PairValue<StringValue, StringValue> ({
-                              srcOwner + "_QubitEntFromOwner" + std::to_string (rank - 1),
-                              srcOwner + "_QubitEntToOwner" + std::to_string (rank + 1)
-                              }));
-
-      ApplicationContainer srcApps = srcHelper.Install (qphyent->GetNode (srcOwner));
-      Ptr<EntSwapSrcApp> telepSrcApp = srcApps.Get (0)->GetObject<EntSwapSrcApp> ();
-
-      telepSrcApp->SetStartTime (Seconds (TELEP_DELAY * rank));
-      telepSrcApp->SetStopTime (Seconds (TELEP_DELAY * (rank + 1)));
+        former.push_back(i == 0 ? "" : owners[i] + "_Former");
+        latter.push_back(i + 1 == nNodes ? "" : owners[i] + "_Latter");
     }
 
-  EntSwapDstHelper dstHelper (qphyent, qphyent->GetNode (dstOwner));
-  dstHelper.SetAttribute ("Qubit", StringValue (dstOwner + "_QubitEntFromOwner" + std::to_string (N - 2)));
-  dstHelper.SetAttribute ("Count", UintegerValue (N - 2));
+    // Every node but the last one shares a Bell pair with the next node.
+    for (uint32_t i = 0; i + 1 < nNodes; ++i)
+    {
+        Ptr<QuantumChannel> channel = CreateObject<QuantumChannel>(owners[i], owners[i + 1]);
+        qphyent->SetDepolarModel(channel, fidelity);
+        auto distributor = DynamicCast<DistributeEprSrcProtocol>(
+            qphyent->GetConn2Apps(channel, QNS_APP_DIST_EPR).first);
+        Simulator::Schedule(MilliSeconds(100),
+                            &DistributeEprSrcProtocol::GenerateAndDistributeEpr,
+                            distributor,
+                            std::pair<std::string, std::string>{latter[i], former[i + 1]});
+    }
 
-  ApplicationContainer dstApps = dstHelper.Install (qphyent->GetNode (dstOwner));
-  Ptr<EntSwapDstApp> dstApp = dstApps.Get (0)->GetObject<EntSwapDstApp> ();
+    // The repeaters measure one after another and report to the last node.
+    for (uint32_t i = 1; i + 1 < nNodes; ++i)
+    {
+        EntSwapSrcHelper srcHelper(qphyent, CreateObject<QuantumChannel>(owners[i], owners.back()));
+        srcHelper.SetAttribute("Qubits",
+                               PairValue<StringValue, StringValue>({former[i], latter[i]}));
+        srcHelper.Install().Start(i * swapInterval);
+    }
+    EntSwapDstHelper dstHelper(qphyent, qphyent->GetQuantumNode(owners.back()));
+    dstHelper.SetAttribute("Qubit", StringValue(former.back()));
+    dstHelper.SetAttribute("Count", UintegerValue(nNodes - 2));
+    ApplicationContainer dstApp = dstHelper.Install();
+    // What to report, and when: the fidelity of the final pair, once it is corrected.
+    dstApp.Get(0)->TraceConnectWithoutContext(
+        "Finished",
+        MakeBoundCallback(&ReportFidelity,
+                          qphyent,
+                          std::pair<std::string, std::string>{latter.front(), former.back()}));
 
-  dstApp->SetStartTime (Seconds (CLASSICAL_DELAY));
-  dstApp->SetStopTime (Seconds (TELEP_DELAY * (N - 1)));
+    Simulator::Stop((nNodes - 1) * swapInterval);
+    Simulator::Run();
+    NS_ABORT_MSG_UNLESS(g_finished, "The protocol did not finish before the simulation stopped");
 
-  //
-  // Run the simulation.
-  //
-  Simulator::Stop (Seconds (TELEP_DELAY * (N - 1)));
-  auto start = std::chrono::high_resolution_clock::now ();
-  Simulator::Run ();
-  auto end = std::chrono::high_resolution_clock::now ();
-  printf ("Total time cost: %ld s\n",
-          std::chrono::duration_cast<std::chrono::seconds> (end - start).count ());
-  Simulator::Destroy ();
-
-  return 0;
+    Simulator::Destroy();
+    return 0;
 }

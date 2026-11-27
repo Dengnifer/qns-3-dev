@@ -1,52 +1,60 @@
-// Note that Alice's app must be created before Bob's app
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
 #ifndef ENT_SWAP_ADAPT_LOCAL_APP_H
 #define ENT_SWAP_ADAPT_LOCAL_APP_H
 
-#include "ns3/socket.h"
-#include "ns3/application.h"
+#include "quantum-application.h"
+#include "quantum-basis.h"
 
-#include <complex>
+namespace ns3
+{
 
-namespace ns3 {
-
-class QuantumPhyEntity;
 class QuantumMemory;
 
 /**
- * \brief Entanglement swapping application with adaptation,
- * getting around long distance operations, achieving a linear scaling.
- * 
- * This application is used to schedule a chained entanglement swapping
- * with only short distance control operations.
- * A longer EPR pair is gained at the cost of several shorter (more local) EPR pairs.
- * 
- * 1. Every node generates and distributes a EPR pair to its neighbor with the help of DistributeEPRApps.
- * 2. God pass control information from every node to the next.
- * 3. God apply controlled correction gates.
-*/
-class EntSwapAdaptLocalApp : public Application
+ * @ingroup quantum
+ * A chain of entanglement swappings with adapted control flow and local flags.
+ *
+ * Like EntSwapAdaptApp, but the flags travel along the chain: every repeater
+ * folds the flags of its predecessor into its own two qubits, so that each
+ * controlled gate only joins neighboring nodes and the tensor network stays a
+ * chain. This scales to much longer chains than EntSwapAdaptApp.
+ *
+ * The application creates the noisy Bell pairs itself, as Werner states, and
+ * runs on the last node of the chain. Entry i of the two memories names the
+ * qubits of node i: the one entangled with node i - 1 and the one entangled
+ * with node i + 1. *
+ * The application computes no result itself. When its Finished trace fires,
+ * read what you need from QuantumPhyEntity, for example with
+ * PeekDensityMatrix() or CalculateFidelity().
+ */
+class EntSwapAdaptLocalApp : public QuantumApplication
 {
-public:
-  EntSwapAdaptLocalApp (Ptr<QuantumPhyEntity> qphyent_,
-                   Ptr<QuantumMemory> qubits_former_,
-                   Ptr<QuantumMemory> qubits_latter_);
-  virtual ~EntSwapAdaptLocalApp ();
+  public:
+    /**
+     * Get the type ID.
+     * @return The object TypeId.
+     */
+    static TypeId GetTypeId();
 
-  EntSwapAdaptLocalApp ();
-  static TypeId GetTypeId ();
+  protected:
+    void DoDispose() override;
 
-  /**
-   * \brief Schedule all events in the chained entanglement swapping.
-  */
-  void EntanglementSwapping ();
+  private:
+    void DoStartApplication() override;
 
-private:
-  virtual void StartApplication ();
+    /**
+     * Run the whole chain of swappings.
+     */
+    void EntanglementSwapping();
 
-  Ptr<QuantumPhyEntity> m_qphyent; /**< The quantum physical entity. */
-  Ptr<QuantumMemory> m_qubits_former; /**< The former qubit of this owner. */
-  Ptr<QuantumMemory> m_qubits_latter; /**< The latter qubit of this owner. */
+    Ptr<QuantumMemory> m_qubitsFormer; //!< Per node, the qubit entangled with the previous node
+    Ptr<QuantumMemory> m_qubitsLatter; //!< Per node, the qubit entangled with the next node
+    double m_eprFidelity{0.95};        //!< Fidelity of each Bell pair of the chain
 };
 
 } // namespace ns3

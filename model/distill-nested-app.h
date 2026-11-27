@@ -1,80 +1,129 @@
-// Note that Alice's app must be created before Bob's app
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
 #ifndef DISTILL_NESTED_APP_H
 #define DISTILL_NESTED_APP_H
 
-#include "ns3/socket.h"
-#include "ns3/application.h"
+#include "quantum-application.h"
 
-namespace ns3 {
+#include "ns3/nstime.h"
 
-class QuantumPhyEntity;
-class QuantumNode;
+#include <string>
+#include <vector>
+
+namespace ns3
+{
+
 class QuantumChannel;
 class QuantumMemory;
 
 /**
- * \brief Nested distillation application.
- * 
- * This application is used to schedule a nested distillation between two nodes, say Alice and Bob.
- * The protocol distillates one pair of EPRs from n = 2^m pairs of EPRs.
+ * @ingroup quantum
+ * Source side (Alice) of nested entanglement distillation.
+ *
+ * Starting from 2^k Bell pairs, the pairs are distilled two by two, then the
+ * survivors two by two, and so on, until one pair is left; see DistillSrcApp
+ * for one round. Alice plans all rounds when she starts and runs them one
+ * after another.
+ *
+ * Each round samples its measurement outcomes. The protocol does not stop when
+ * a round fails, so the final pair is only meaningful if GetWin() is true. For
+ * the exact success probability and fidelity, see DistillNestedAdaptApp.
  */
-class DistillNestedApp : public Application
+class DistillNestedSrcApp : public QuantumApplication
 {
+  public:
+    /**
+     * Get the type ID.
+     * @return The object TypeId.
+     */
+    static TypeId GetTypeId();
 
-public:
-  DistillNestedApp (Ptr<QuantumPhyEntity> qphyent_, bool checker_, Ptr<QuantumChannel> conn_,
-                    const std::pair<std::string, std::string> &qubits_);
-  virtual ~DistillNestedApp ();
+    /**
+     * Get the number of rounds whose verdict has arrived.
+     *
+     * @return The number of finished rounds.
+     */
+    uint32_t GetNRoundsDone() const;
 
-  DistillNestedApp ();
-  static TypeId GetTypeId ();
+    /**
+     * Get the verdict.
+     *
+     * @return True if at least one round is over and no round has failed.
+     */
+    bool GetWin() const;
 
-  // schedule all events to get one EPR pair (src_qubits[0], dst_qubits[0])
-  void Distillate (const std::vector<std::string> &src_qubits,
-                   const std::vector<std::string> &dst_qubits);
-  // distillate the two EPR pairs (front) and (middle) to get one (front)                   
-  void DistillateOnce (const std::vector<std::string> &src_qubits,
-                       const std::vector<std::string> &dst_qubits);
+  protected:
+    void DoDispose() override;
 
-  void SetRemote (Address ip, uint16_t port);
-  void SetFill (std::string fill);
-  void SendPacket (Ptr<Packet> packet, Ipv6Address destination, uint16_t port);
-  void Send ();
+  private:
+    void DoStartApplication() override;
+    void HandleMessage(const std::string& message, const Address& from) override;
 
-  void HandleRead (Ptr<Socket> socket);
+    /**
+     * Plan the distillation of some pairs into the first of them.
+     *
+     * @param srcQubits Alice's qubits of the pairs.
+     * @param dstQubits Bob's qubits of the pairs.
+     */
+    void Distillate(const std::vector<std::string>& srcQubits,
+                    const std::vector<std::string>& dstQubits);
 
-  void SetSrcQubits (Ptr<QuantumMemory> src_qubits);
-  void SetDstQubits (Ptr<QuantumMemory> dst_qubits);
-  bool GetWin () const;
+    /**
+     * Run Alice's part of one round: distill the first pair of each half.
+     *
+     * @param srcQubits Alice's qubits of the pairs.
+     * @param dstQubits Bob's qubits of the pairs.
+     */
+    void DistillateOnce(const std::vector<std::string>& srcQubits,
+                        const std::vector<std::string>& dstQubits);
 
-  Time GetOccupied () const;
-  void Occupy (Time time);
+    Ptr<QuantumChannel> m_channel;  //!< The quantum channel from Alice to Bob
+    Ptr<QuantumMemory> m_srcQubits; //!< Alice's qubits, one per pair
+    Ptr<QuantumMemory> m_dstQubits; //!< Bob's qubits, one per pair
+    Time m_interval;                //!< Time between the steps of the protocol
+    Time m_occupied;                //!< Time until which the planned steps keep Alice busy
+    uint32_t m_nRoundsDone{0};      //!< Number of finished rounds
+    bool m_win{true};               //!< Whether no round has failed so far
+};
 
-private:
-  void SetupReceiveSocket (Ptr<Socket> socket, uint16_t port);
-  virtual void StartApplication ();
+/**
+ * @ingroup quantum
+ * Destination side (Bob) of nested entanglement distillation.
+ *
+ * See DistillNestedSrcApp.
+ */
+class DistillNestedDstApp : public QuantumApplication
+{
+  public:
+    /**
+     * Get the type ID.
+     * @return The object TypeId.
+     */
+    static TypeId GetTypeId();
 
-  Ptr<Socket> m_recv_socket; /**< A socket to receive on a specific port */
-  uint16_t m_port;
+    /**
+     * Get the number of rounds in which Bob has measured.
+     *
+     * @return The number of finished rounds.
+     */
+    uint32_t GetNRoundsDone() const;
 
-  Ptr<Socket> m_send_socket; /**< A socket to listen on a specific port */
+    /**
+     * Get the verdict.
+     *
+     * @return True if at least one round is over and no round has failed.
+     */
+    bool GetWin() const;
 
-  Address m_peerAddress; //!< Remote peer address
-  uint16_t m_peerPort; //!< Remote peer port
+  private:
+    void HandleMessage(const std::string& message, const Address& from) override;
 
-  uint32_t m_size; //!< Size of the sent packet
-  uint32_t m_dataSize; //!< packet payload size (must be equal to m_size)
-  uint8_t *m_data; //!< packet payload data
-
-  Ptr<QuantumPhyEntity> m_qphyent;
-  bool m_checker;
-  Ptr<QuantumNode> m_pnode;
-  Ptr<QuantumChannel> m_conn;
-  Ptr<QuantumMemory> m_src_qubits;
-  Ptr<QuantumMemory> m_dst_qubits;
-  bool m_win;
-  Time m_occupied;
+    uint32_t m_nRoundsDone{0}; //!< Number of finished rounds
+    bool m_win{true};          //!< Whether no round has failed so far
 };
 
 } // namespace ns3

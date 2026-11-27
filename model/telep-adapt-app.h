@@ -1,65 +1,62 @@
-// Note that Alice's app must be created before Bob's app
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
 #ifndef TELEP_ADAPT_APP_H
 #define TELEP_ADAPT_APP_H
 
-#include "ns3/socket.h"
-#include "ns3/application.h"
+#include "quantum-application.h"
+#include "quantum-basis.h"
 
-namespace ns3 {
+#include "ns3/nstime.h"
 
-class QuantumPhyEntity;
-class Qubit;
+#include <string>
+#include <utility>
+
+namespace ns3
+{
+
 class QuantumChannel;
+class Qubit;
 
 /**
- * \brief Teleportation application with adaption.
- * 
- * This application is used to schedule a teleportation between two nodes, say Alice and Bob.
- * The protocol teleports a single qubit state, say psi, at the cost of a EPR pair.
- * 
- * 1. Alice generates and distributes a EPR pair to Bob with the help of DistributeEPRApps.
- * 2. Alice applies local operations on her qubits.
- * 2. God apply control operations on Alice's qubits and the Bob's qubit (goal).
-*/
-class TelepAdaptApp : public Application
+ * @ingroup quantum
+ * Quantum teleportation with adapted control flow.
+ *
+ * Instead of measuring Alice's qubits and correcting Bob's qubit according to
+ * the outcomes, the application applies the corrections as controlled gates
+ * and traces Alice's qubits out. One run then covers all four measurement
+ * branches, and the state of Bob's qubit is exact rather than sampled.
+ *
+ * The application runs on Alice's node and needs no classical message. *
+ * The application computes no result itself. When its Finished trace fires,
+ * read what you need from QuantumPhyEntity, for example with
+ * PeekDensityMatrix() or CalculateFidelity().
+ */
+class TelepAdaptApp : public QuantumApplication
 {
-public:
-  TelepAdaptApp (Ptr<QuantumPhyEntity> qphyent_, Ptr<QuantumChannel> conn_,
-                 const std::string& last_owner_,
-                 const std::pair<std::string, std::string> &qubits_);
-  virtual ~TelepAdaptApp ();
+  public:
+    /**
+     * Get the type ID.
+     * @return The object TypeId.
+     */
+    static TypeId GetTypeId();
 
-  TelepAdaptApp ();
-  static TypeId GetTypeId ();
+  protected:
+    void DoDispose() override;
 
-  /**
-   * \brief Schedule all the events in a teleportation.
-   * 
-   * \note Alice generates the input qubit if and only if m_input is not null.
-  */
-  void Teleport ();
+  private:
+    void DoStartApplication() override;
 
-  void SetQubits (const std::pair<std::string, std::string> &qubits_);
-  void SetQubit (const std::string &qubit_);
-
-  /**
-   * \brief Set the pointer to (the state vector of) the input qubit.
-   * \param input_ The pointer to the input qubit.
-   * 
-   * \note Alice will generate the input qubit in Telep () if and only if m_input is not null.
-  */
-  void SetInput (Ptr<Qubit> input_);
-
-private:
-  virtual void StartApplication ();
-
-  Ptr<QuantumPhyEntity> m_qphyent; /**< The quantum physical entity. */
-  Ptr<QuantumChannel> m_conn; /**< The quantum connection. */
-  std::string m_last_owner; /**< The last owner of the teleportation chain. */
-  std::pair<std::string, std::string> m_qubits; /**< The two qubits of Alice. */
-  std::string m_qubit; /**< The qubit of Bob. */
-  Ptr<Qubit> m_input; /**< The pointer to the input qubit. */
+    Ptr<QuantumChannel> m_channel; //!< The quantum channel from Alice to Bob
+    std::string m_lastOwner;       //!< Owner at the end of the teleportation chain
+    std::pair<std::string, std::string>
+        m_qubits;        //!< Alice's qubit to teleport and her half of the pair
+    std::string m_qubit; //!< Bob's half of the pair
+    Ptr<Qubit> m_input;  //!< State to prepare Alice's qubit in, if any
+    Time m_delay;        //!< Wait between sharing the pair and the local operations
 };
 
 } // namespace ns3

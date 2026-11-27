@@ -1,215 +1,163 @@
-#include "ns3/quantum-error-model.h"
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
-#include "ns3/quantum-basis.h"
-#include "ns3/quantum-phy-entity.h" // class QuantumPhyEntity
-#include "ns3/quantum-operation.h" // QuantumOperation
+#include "quantum-error-model.h"
 
-namespace ns3 {
+#include "ns3/double.h"
+#include "ns3/log.h"
 
-NS_LOG_COMPONENT_DEFINE ("QuantumErrorModel");
+#include <cmath>
+#include <sstream>
 
-NS_OBJECT_ENSURE_REGISTERED (QuantumErrorModel);
-
-/* abstract model */
-
-QuantumErrorModel::QuantumErrorModel (bool time_dependent_)
-    : m_time_dep (time_dependent_), m_type_desc ("QuantumErrorModel")
+namespace ns3
 {
+
+NS_LOG_COMPONENT_DEFINE("QuantumErrorModel");
+
+namespace
+{
+
+/**
+ * Build the dephasing accumulated in a memory.
+ *
+ * @param duration Time spent in the memory.
+ * @param coherenceTime Coherence time of the memory.
+ * @return A Pauli Z error with probability (1 - exp(-duration / coherenceTime)) / 2.
+ */
+QuantumOperation
+MakeDephasing(Time duration, Time coherenceTime)
+{
+    const double probability =
+        (1 - std::exp(-duration.GetSeconds() / coherenceTime.GetSeconds())) / 2;
+    return {{"I", "PZ"}, {QNS_PAULI_I, QNS_PAULI_Z}, {1 - probability, probability}};
 }
 
-QuantumErrorModel::QuantumErrorModel () : m_time_dep (false), m_type_desc ("")
-{
-}
+} // namespace
 
-void
-QuantumErrorModel::DoDispose (void)
-{
-  Object::DoDispose ();
-}
+NS_OBJECT_ENSURE_REGISTERED(QuantumErrorModel);
 
 TypeId
-QuantumErrorModel::GetTypeId (void)
+QuantumErrorModel::GetTypeId()
 {
-  static TypeId tid = TypeId ("ns3::QuantumErrorModel").SetParent<Object> ();
-  return tid;
+    static TypeId tid =
+        TypeId("ns3::QuantumErrorModel").SetParent<Object>().SetGroupName("Quantum");
+    return tid;
+}
+
+NS_OBJECT_ENSURE_REGISTERED(TimeModel);
+
+TypeId
+TimeModel::GetTypeId()
+{
+    static TypeId tid =
+        TypeId("ns3::TimeModel")
+            .SetParent<QuantumErrorModel>()
+            .SetGroupName("Quantum")
+            .AddConstructor<TimeModel>()
+            .AddAttribute("CoherenceTime",
+                          "Coherence time of the memory; a longer time means less noise.",
+                          TimeValue(Seconds(1)),
+                          MakeTimeAccessor(&TimeModel::m_coherenceTime),
+                          MakeTimeChecker(NanoSeconds(1)));
+    return tid;
+}
+
+QuantumOperation
+TimeModel::GetOperation(Time elapsed) const
+{
+    NS_LOG_FUNCTION(this << elapsed);
+    return MakeDephasing(elapsed, m_coherenceTime);
 }
 
 std::string
-QuantumErrorModel::GetTypeDesc () const
+TimeModel::GetDescription() const
 {
-  return m_type_desc;
+    std::ostringstream oss;
+    oss << "TimeModel with coherence time " << m_coherenceTime.As(Time::S);
+    return oss.str();
 }
 
-void
-QuantumErrorModel::ApplyErrorModel (Ptr<QuantumPhyEntity> qphyent,
-                                    const std::vector<std::string> &qubits,
-                                    const Time &moment) const
-{
-  NS_LOG_ERROR (RED_CODE << "Error: reaching QuantumErrorModel::ApplyErrorModel" << END_CODE);
-  assert (false);
-}
-
-
-
-
-/* time relevant model */
-
-TimeModel::TimeModel (double rate_) : QuantumErrorModel (true), m_rate (rate_)
-{
-  m_type_desc = "TimeModel with rate " + std::to_string (m_rate);
-}
-
-TimeModel::TimeModel () : QuantumErrorModel (), m_rate (0)
-{
-}
-
-void
-TimeModel::DoDispose (void)
-{
-  QuantumErrorModel::DoDispose ();
-}
+NS_OBJECT_ENSURE_REGISTERED(DephaseModel);
 
 TypeId
-TimeModel::GetTypeId (void)
+DephaseModel::GetTypeId()
 {
-  static TypeId tid =
-      TypeId ("ns3::TimeModel").SetParent<QuantumErrorModel> ().AddConstructor<TimeModel> ();
-  return tid;
+    static TypeId tid =
+        TypeId("ns3::DephaseModel")
+            .SetParent<QuantumErrorModel>()
+            .SetGroupName("Quantum")
+            .AddConstructor<DephaseModel>()
+            .AddAttribute("CoherenceTime",
+                          "Coherence time of the memory in which the gate is modeled to wait.",
+                          TimeValue(Seconds(1)),
+                          MakeTimeAccessor(&DephaseModel::m_coherenceTime),
+                          MakeTimeChecker(NanoSeconds(1)))
+            .AddAttribute("GateDuration",
+                          "Duration of the wait that models the gate.",
+                          TimeValue(MicroSeconds(200)),
+                          MakeTimeAccessor(&DephaseModel::m_gateDuration),
+                          MakeTimeChecker(Time(0)));
+    return tid;
 }
 
-void
-TimeModel::ApplyErrorModel (Ptr<QuantumPhyEntity> qphyent, const std::vector<std::string> &qubits,
-                            const Time &moment) const
+QuantumOperation
+DephaseModel::GetOperation(Time elapsed) const
 {
-  for (const std::string &qubit : qubits)
-    {
-      Time duration = moment - qphyent->m_qubit2time[qubit];
-      if (duration.GetDouble () < 0)
-        {
-          NS_LOG_WARN ("duration < 0, skip");
-          continue;
-        }
-      if (abs(duration.GetDouble () - 0) < EPS)
-        {
-          continue;
-        }
-      double prob_time = (1 - exp (-duration.GetSeconds () / m_rate)) / 2;
-      QuantumOperation time = {{"I", "PZ"}, {pauli_I, pauli_Z}, 
-      {1 - prob_time, prob_time}};
-
-      NS_LOG_LOGIC ("At time " << moment.As (Time::S) << " qubit named " << qubit
-                               << " applied time relevant error with prob " << prob_time
-                               << " (duration = " << duration.As (Time::S)
-                               << ", m_rate = " << m_rate << ")");
-
-      qphyent->ApplyOperation (time, qubits);
-    }
+    NS_LOG_FUNCTION(this << elapsed);
+    return MakeDephasing(m_gateDuration, m_coherenceTime);
 }
 
-
-
-
-/* dephasing model */
-
-DephaseModel::DephaseModel (double rate_)
-    : QuantumErrorModel (false), // time independent
-      m_rate (rate_)
+std::string
+DephaseModel::GetDescription() const
 {
-  m_type_desc = "DephaseModel with rate " + std::to_string (m_rate );
-
+    std::ostringstream oss;
+    oss << "DephaseModel with coherence time " << m_coherenceTime.As(Time::S)
+        << " and gate duration " << m_gateDuration.As(Time::S);
+    return oss.str();
 }
 
-DephaseModel::DephaseModel () : QuantumErrorModel (), m_rate (0)
-{
-}
-
-void
-DephaseModel::DoDispose (void)
-{
-  QuantumErrorModel::DoDispose ();
-}
+NS_OBJECT_ENSURE_REGISTERED(DepolarModel);
 
 TypeId
-DephaseModel::GetTypeId (void)
+DepolarModel::GetTypeId()
 {
-  static TypeId tid =
-      TypeId ("ns3::DephaseModel").SetParent<QuantumErrorModel> ().AddConstructor<DephaseModel> ();
-  return tid;
+    static TypeId tid = TypeId("ns3::DepolarModel")
+                            .SetParent<QuantumErrorModel>()
+                            .SetGroupName("Quantum")
+                            .AddConstructor<DepolarModel>()
+                            .AddAttribute("Fidelity",
+                                          "Probability that the qubit is left alone.",
+                                          DoubleValue(0.95),
+                                          MakeDoubleAccessor(&DepolarModel::m_fidelity),
+                                          MakeDoubleChecker<double>(0.0, 1.0));
+    return tid;
 }
 
-void
-DephaseModel::ApplyErrorModel (Ptr<QuantumPhyEntity> qphyent,
-                               const std::vector<std::string> &qubits, const Time &moment) const
+QuantumOperation
+DepolarModel::GetOperation(Time elapsed) const
 {
-  for (const std::string &qubit : qubits)
-    {
-      Time duration = Seconds (GATE_DURATION);
-
-      double prob_dephase = (1 - exp (- duration.GetSeconds () / m_rate)) / 2;
-      QuantumOperation dephase = {
-          {"I", "PZ"}, {pauli_I, pauli_Z}, 
-          {1 - prob_dephase, prob_dephase}};
-
-      NS_LOG_LOGIC ("At time " << moment.As (Time::S) << " qubit named " << qubit
-                               << " applied dephasing error with prob = " << prob_dephase
-                               << " (m_rate = " << m_rate << ")");
-      qphyent->ApplyOperation (dephase, qubits);
-    }
+    NS_LOG_FUNCTION(this << elapsed);
+    const double error = (1 - m_fidelity) / 3;
+    return {{"I", "PX", "PY", "PZ"},
+            {QNS_PAULI_I, QNS_PAULI_X, QNS_PAULI_Y, QNS_PAULI_Z},
+            {m_fidelity, error, error, error}};
 }
 
-
-
-
-
-/* depolarizing model */
-
-DepolarModel::DepolarModel (double fidel_)
-    : QuantumErrorModel (false), // time independent
-      m_fidel (fidel_)
+std::string
+DepolarModel::GetDescription() const
 {
-
-  m_type_desc = "DepolarModel with fidel " + std::to_string (m_fidel);
+    std::ostringstream oss;
+    oss << "DepolarModel with fidelity " << m_fidelity;
+    return oss.str();
 }
 
-DepolarModel::DepolarModel () : QuantumErrorModel (), m_fidel (0)
+double
+DepolarModel::GetFidelity() const
 {
-}
-
-void
-DepolarModel::DoDispose (void)
-{
-  QuantumErrorModel::DoDispose ();
-}
-
-TypeId
-DepolarModel::GetTypeId (void)
-{
-  static TypeId tid =
-      TypeId ("ns3::DepolarModel").SetParent<QuantumErrorModel> ().AddConstructor<DepolarModel> ();
-  return tid;
-}
-
-void
-DepolarModel::ApplyErrorModel (Ptr<QuantumPhyEntity> qphyent,
-                               const std::vector<std::string> &qubits, const Time &moment) const
-{
-  assert (qubits.size () == 1); // the second qubit in a epr pair
-
-  QuantumOperation depolar = {
-      {"I", "PX", "PY", "PZ"},
-      {pauli_I, pauli_X, pauli_Y, pauli_Z},
-      {m_fidel, (1 - m_fidel) / 3., (1 - m_fidel) / 3., (1 - m_fidel) / 3.}};
-
-  NS_LOG_LOGIC ("At time +0s qubit named " << qubits[0] << " applied depolar error with fidel "
-                                           << m_fidel);
-
-  qphyent->ApplyOperation (depolar, qubits);
-}
-
-double 
-DepolarModel::GetFidelity () const
-{
-  return m_fidel;
+    return m_fidelity;
 }
 
 } // namespace ns3

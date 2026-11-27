@@ -1,268 +1,201 @@
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
+
 #ifndef QUANTUM_NETWORK_SIMULATOR_H
 #define QUANTUM_NETWORK_SIMULATOR_H
 
-#include "ns3/object.h"
+#include "quantum-basis.h"
 
-#include "ns3/quantum-basis.h"
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
-namespace ns3 {
+namespace ns3
+{
 
 class QuantumOperation;
 
-class QuantumNetworkSimulator : public Object
+/**
+ * @ingroup quantum
+ * Result of measuring one qubit in the computational basis.
+ */
+struct QuantumMeasurement
 {
+    unsigned outcome{0};              //!< The outcome, 0 or 1
+    std::vector<double> distribution; //!< Probabilities of the outcomes 0 and 1
+};
 
-  friend class QuantumPhyEntity;
+/**
+ * @ingroup quantum
+ * Tensor-network engine that holds the joint state of all qubits.
+ *
+ * The engine keeps the density matrix of the network as a tensor network and
+ * appends one tensor per state preparation, gate, noise operation or partial
+ * trace. Nothing is contracted until a number is needed: a measurement
+ * probability, a density matrix or a fidelity.
+ *
+ * The engine knows nothing about nodes, ownership, time or noise models; see
+ * QuantumPhyEntity for those. The owner names it takes are used for logging
+ * only.
+ *
+ * The tensor contractions are delegated to the ExaTN library, which is an
+ * implementation detail hidden behind this interface.
+ */
+class QuantumNetworkSimulator
+{
+  public:
+    QuantumNetworkSimulator();
+    ~QuantumNetworkSimulator();
 
-private:
-  
-/* circuit */
-  
-  /** Tensor network for the density matrix. */
-  exatn::numerics::TensorNetwork m_dm;
-  
-  /** Next tensor id in the tensor network */
-  unsigned m_dm_id;
+    // The engine owns tensors registered with ExaTN under unique names.
+    QuantumNetworkSimulator(const QuantumNetworkSimulator&) = delete;
+    QuantumNetworkSimulator& operator=(const QuantumNetworkSimulator&) = delete;
 
-  /** All generated qubits. */
-  std::vector<std::string> m_qubits_all;
+    /**
+     * Create qubits in a pure state.
+     *
+     * @param owner Owner that creates the qubits.
+     * @param data State vector with 2^n entries, for n qubits.
+     * @param qubits Unique names of the n qubits.
+     */
+    void GenerateQubitsPure(const std::string& owner,
+                            const QuantumTensorData& data,
+                            const std::vector<std::string>& qubits);
 
-  /** Valid qubits that are not traced out. */
-  std::vector<std::string> m_qubits_vld;
+    /**
+     * Create qubits in a mixed state.
+     *
+     * @param owner Owner that creates the qubits.
+     * @param data Density matrix with 2^n * 2^n entries, for n qubits.
+     * @param qubits Unique names of the n qubits.
+     */
+    void GenerateQubitsMixed(const std::string& owner,
+                             const QuantumTensorData& data,
+                             const std::vector<std::string>& qubits);
 
-  /** Map from qubit name to its tensor id in the "ket" half
-   * of the tensor network, and the leg id in the tensor. */
-  std::map<std::string, std::pair<unsigned, unsigned>> m_qubit2tensor;
+    /**
+     * Apply a gate.
+     *
+     * @param owner Owner that applies the gate.
+     * @param gate Name of the gate.
+     * @param data Matrix of the gate with 2^n * 2^n entries. Ignored for a
+     *             built-in gate; may be empty for a gate applied before.
+     * @param qubits Names of the n qubits the gate acts on.
+     */
+    void ApplyGate(const std::string& owner,
+                   const std::string& gate,
+                   const QuantumTensorData& data,
+                   const std::vector<std::string>& qubits);
 
-  /** Map from qubit name to its tensor id in the "bra" half
-   * of the tensor network, and the leg id in the tensor. */
-  std::map<std::string, std::pair<unsigned, unsigned>> m_qubit2tensor_dag;
+    /**
+     * Apply a quantum operation.
+     *
+     * @param operation The operation.
+     * @param qubits Names of the qubits the operation acts on.
+     */
+    void ApplyOperation(const QuantumOperation& operation, const std::vector<std::string>& qubits);
 
+    /**
+     * Measure one qubit in the computational basis and project the state.
+     *
+     * @param owner Owner that measures.
+     * @param qubit Name of the qubit.
+     * @param sample A sample drawn uniformly from [0, 1); the outcome is 0 if
+     *               the sample is below the probability of outcome 0.
+     * @return The outcome and the probabilities of both outcomes.
+     */
+    QuantumMeasurement Measure(const std::string& owner, const std::string& qubit, double sample);
 
-/* util */
-  
-  /** Count of ExaTN tensor names allocated automatically. */
-  unsigned m_exatn_name_count;
+    /**
+     * Project one qubit onto a chosen measurement outcome and renormalize.
+     *
+     * This conditions the state on the outcome without sampling, which is how
+     * an exact simulation reads a flag qubit.
+     *
+     * @param owner Owner that post-selects.
+     * @param qubit Name of the qubit.
+     * @param outcome The outcome to keep, 0 or 1; it must have a positive probability.
+     * @return The probability that a measurement would have given @p outcome.
+     */
+    double PostSelect(const std::string& owner, const std::string& qubit, unsigned outcome);
 
-  /** All created ExaTN tensors. */
-  std::vector<std::string> m_exatn_tensors = {};
+    /**
+     * Compute the reduced density matrix of some qubits without disturbing them.
+     *
+     * @param owner Owner that asks.
+     * @param qubits Names of the n qubits.
+     * @return The density matrix, with 2^n * 2^n entries.
+     */
+    QuantumTensorData PeekDensityMatrix(const std::string& owner,
+                                        const std::vector<std::string>& qubits);
 
-public:
-  QuantumNetworkSimulator (const std::vector<std::string> &owners);
+    /**
+     * Discard qubits.
+     *
+     * @param qubits Names of the qubits to trace out.
+     */
+    void PartialTrace(const std::vector<std::string>& qubits);
 
-  QuantumNetworkSimulator (const QuantumNetworkSimulator &qnetsim);
+    /**
+     * Contract the tensor network into a single tensor.
+     *
+     * Contracting discards the tensors of the traced-out qubits, which keeps
+     * the cost of later queries low.
+     *
+     * @param optimizer Name of the contraction order optimizer: one of the
+     *                  ExaTN optimizers "dummy", "heuro", "greed", "metis" and
+     *                  "cutnn", or "ascend" (order of creation), or "distill"
+     *                  (binary tree given by the calls to Checkpoint()).
+     * @return The density matrix of all remaining qubits.
+     */
+    QuantumTensorData Contract(const std::string& optimizer);
 
-  ~QuantumNetworkSimulator ();
+    /**
+     * Compute the fidelity of two qubits with respect to the Bell state #QNS_BELL.
+     *
+     * @param epr Names of the two qubits.
+     * @return The fidelity.
+     */
+    double CalculateFidelity(const std::pair<std::string, std::string>& epr);
 
-  QuantumNetworkSimulator ();
-  static TypeId GetTypeId (void);
+    /**
+     * Mark the end of a subcircuit, for the "distill" optimizer.
+     *
+     * The optimizer contracts the tensors created between two consecutive
+     * checkpoints together, and combines the subcircuits as the nodes of a
+     * complete binary tree listed in post-order.
+     */
+    void Checkpoint();
 
-/* tensor */
+    /**
+     * Check whether qubits exist and have not been traced out.
+     *
+     * @param qubits Names of the qubits.
+     * @return True if all of the qubits are valid.
+     */
+    bool AreValid(const std::vector<std::string>& qubits) const;
 
-  /**
-   * \brief Create and initialize an ExaTN tensor for n qubits.
-   * \param name Name of the tensor.
-   * \param data State vector of the qubits.
-   * 
-   * \note The data size must be 2^n.
-   * 
-  */
-  void PrepareQubitsPure (const std::string &name, std::vector<std::complex<double>> data);
+    /**
+     * Get the qubits that exist and have not been traced out.
+     *
+     * @return The names of the valid qubits, in order of creation.
+     */
+    std::vector<std::string> GetValidQubits() const;
 
-  /**
-   * \brief Create and initialize an ExaTN tensor for n qubits.
-   * \param name Name of the tensor.
-   * \param data Density matrix of the qubits.
-   * 
-   * \note The data size must be 2^n * 2^n.
-   * 
-  */
-  void PrepareQubitsMixed (const std::string &name, std::vector<std::complex<double>> data);
+    /**
+     * Get the size of the tensor network.
+     *
+     * @return The number of tensors in the network.
+     */
+    std::size_t GetNTensors() const;
 
-  /**
-   * \brief Create and initialize an ExaTN tensor for a n-qubit gate.
-   * \param name Name of the tensor.
-   * \param data Data of the gate.
-   * 
-   * \note The data size must be 2^n * 2^n.
-  */
-  void PrepareGate (const std::string &name,
-                    const std::vector<std::complex<double>> &data);
-
-  /**
-   * \brief Create and initialize an ExaTN tensor for a n-qubit operation.
-   * \param name Name of the tensor.
-   * \param data Data of the operation.
-   * 
-   * \note The data size must be a multiple of 2^n * 2^n.
-  */
-  void PrepareOperation (const std::string &name,
-                         const std::vector<std::vector<std::complex<double>>> &data);
-
-  /**
-   * \brief Create and initialize an ExaTN tensor.
-   * \param name Name of the tensor.
-   * \param extents Extents of the tensor.
-   * \param data Data of the tensor.
-  */
-  void PrepareTensor (const std::string &name, const std::vector<unsigned> &extents,
-                      const std::vector<std::complex<double>> &data);
-
-
-
-/* circuit */
-
-  /**
-   * \brief Generate n qubits.
-   * \param owner Owner generating the qubits.
-   * \param data State vector of the qubits.
-   * \param qubits Unique names of the qubits to generate.
-   * \return True if the qubits are generated successfully.
-   * 
-   * \note The data size must be 2^n.
-   * \note The qubits size must be n.
-   * 
-  */
-  bool GenerateQubitsPure (const std::string &owner, const std::vector<std::complex<double>> &data,
-                       const std::vector<std::string> &qubits
-  );
-
-  /**
-   * \brief Generate n qubits.
-   * \param owner Owner generating the qubits.
-   * \param data Density matrix of the qubits.
-   * \param qubits Unique names of the qubits to generate.
-   * \return True if the qubits are generated successfully.
-   * 
-   * \note The qubits size must be n.
-   * 
-  */
-  bool GenerateQubitsMixed (const std::string &owner, const std::vector<std::complex<double>> &data,
-                       const std::vector<std::string> &qubits
-  );
-
-  /**
-   * \brief Apply a gate to n qubits.
-   * \param owner Owner applying the gate.
-   * \param gate Name of the gate.
-   * \param data Data of the gate.
-   * \param qubits Names of the qubits to be applied on.
-   * \return True if the gate is applied successfully.
-   * 
-   * \note If the gate is not a reserved one (defined in QBasis), the data size must be 2^n * 2^n.
-   * \note The qubits size must be n.
-   * 
-  */
-  bool ApplyGate (const std::string &owner, const std::string &gate, 
-                  const std::vector<std::complex<double>> &data, const std::vector<std::string> &qubits
-  );
-
-  /**
-   * \brief Apply an operation to n qubits.
-   * \param owner Owner applying the operation.
-   * \param quantumOperation Quantum operation to be applied.
-   * \param qubits Names of the qubits to be applied on.
-   * \return True if the operation is applied successfully.
-  */
-  bool
-  ApplyOperation (const QuantumOperation &quantumOperation, 
-                  const std::vector<std::string> &qubits 
-  );
-
-  /**
-   * \brief Apply a controlled operation to n qubits (control qubits and target qubits).
-   * 
-   * Apply a controlled operation to control qubits and target qubits,
-   * instead of applying some gate (the original gate) to the target qubits
-   * according to the measurement outcomes on the control qubits.
-   * 
-   * \param owner Owner applying the operation.
-   * \param orig_owner Owner of the original gate.
-   * \param orig_gate Name of the original gate.
-   * \param gate Name of the controlled gate.
-   * \param data Data of the controlled gate.
-   * \param control_qubits Names of the control qubits.
-   * \param target_qubits Names of the target qubits.
-   * \return True if the operation is applied successfully.
-   * 
-   * \note If the gate is not a reserved one (defined in QBasis), the data size must be 2^n * 2^n.
-  */
-  bool ApplyControlledOperation (
-      const std::string &orig_owner,
-      const std::string &orig_gate,
-      const std::string&gate,
-      const std::vector<std::complex<double>> &data, const std::vector<std::string> &control_qubits,
-      const std::vector<std::string> &target_qubits);
-
-  /**
-   * \brief Measure n qubits.
-   * \param owner Owner measuring the qubits. 
-   * \param qubits Names of the qubits to be measured.
-   * \return Measurement outcome and the probability distribution.
-  */ 
-  std::pair<unsigned, std::vector<double>>
-  Measure (const std::string &owner, const std::vector<std::string> &qubits);
-
-  /**
-   * \brief Peek n qubits.
-   * \param owner Owner peeking the qubits.
-   * \param qubits Names of the qubits to be peeked.
-   * \param dm Vector to store the density matrix of the qubits.
-   * \return The composite density matrix of the qubits.
-  */
-  std::vector<std::complex<double>>
-  PeekDM (const std::string &owner,
-          const std::vector<std::string> &qubits,
-          std::vector<std::complex<double>> &dm
-  );
-
-  /**
-   * \brief Trace out n qubits by simply connecting the two ends of their wires.
-   * \param qubits Names of the qubits to be traced out.
-   * \param dm Vector to store the density matrix of the remainder.
-  */
-  bool
-  PartialTrace (const std::vector<std::string> &qubits);
-
-  /**
-   * \brief Contract the tensor network to a single tensor.
-   * \return The density matrix of the tensor.
-  */
-  std::vector<std::complex<double>> Contract (const std::string &optimizer = "greed");
-
-  double CalculateFidelity (const std::pair<std::string, std::string> &epr, double &fidel);
-
-  void Evaluate (exatn::TensorNetwork *circuit, const std::string &optimizer = "greed");
-
-/* util */
-
-  /**
-   * \brief Help the "distill" optimizer to contract the tree of subcircuits.
-  */
-  void Checkpoint ();
-
-  /**
-   * \brief Check if the qubits are valid (not traced out).
-   * \param qubits Names of the qubits to be checked.
-   * \return True if the qubits are all valid.
-  */
-  bool CheckValid (const std::vector<std::string> &qubits) const;
-
-  /**
-   * \brief Allocate a new ExaTN tensor name.
-   * \return The new ExaTN tensor name.
-  */
-  std::string AllocExatnName ();
-
-
-/* debug */
-
-  void PrintQubitsValid () const;
-
-  void PrintTalshTensor (std::shared_ptr<talsh::Tensor> talsh_tensor,
-                         const std::complex<double> *body_ptr);
-
-  void PrintTalshTensorNamed (const std::string &name);  
+  private:
+    class Impl;
+    std::unique_ptr<Impl> m_impl; //!< ExaTN-specific state
 };
 
 } // namespace ns3

@@ -1,133 +1,89 @@
-#include "ns3/quantum-basis.h"
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
-namespace ns3 {
+#include "quantum-basis.h"
 
-NS_LOG_COMPONENT_DEFINE ("QuantumBasis");
+#include "ns3/abort.h"
 
-/* util */
+#include <map>
 
-unsigned ancilla_count;
-
-std::string
-AllocAncillaQubit ()
+namespace ns3
 {
-  return QNS_ANCILLA_PREFIX + std::to_string (ancilla_count++);
+
+const QuantumTensorData*
+FindBuiltinGate(const std::string& name)
+{
+    static const std::map<std::string, const QuantumTensorData*> builtinGates{
+        {QNS_GATE_I, &QNS_PAULI_I},
+        {QNS_GATE_PX, &QNS_PAULI_X},
+        {QNS_GATE_PY, &QNS_PAULI_Y},
+        {QNS_GATE_PZ, &QNS_PAULI_Z},
+        {QNS_GATE_H, &QNS_HADAMARD},
+        {QNS_GATE_CNOT, &QNS_CNOT},
+        {QNS_GATE_CZ, &QNS_CZ},
+        {QNS_GATE_SWAP, &QNS_SWAP},
+        {QNS_GATE_TOFF, &QNS_TOFFOLI},
+        {QNS_GATE_QOR, &QNS_QOR},
+    };
+    auto it = builtinGates.find(name);
+    return it == builtinGates.end() ? nullptr : it->second;
 }
 
-std::ostream &
-operator<< (std::ostream &out, const std::complex<double> &val)
+QuantumTensorData
+MakeWernerState(double fidelity)
 {
-  if (norm (val) < EPS)
-    {
-      out << std::fixed << std::setw(10) << "0    ";
-    }
-  else if (abs (val.imag ()) < EPS)
-    {
-      if (val.real () > 0)
-        out << std::fixed << std::setw(9) << val.real () << " ";
-      else
-        out << std::fixed << std::setw(8) << val.real () << " ";
-    }
-  else if (abs (val.real ()) < EPS)
-    {
-      if (val.imag () > 0)
-        out << std::fixed << std::setw(10) << val.imag () << "·i";
-      else
-        out << std::fixed << std::setw(9) << val.imag () << "·i";
-    }
-  else
-    {
-      out << std::fixed << std::setprecision(2) << val.real () << "+" << val.imag () << "i";
-    }
-  return out;
-}
-
-std::vector<std::complex<double>>
-operator* (std::complex<double> scalar, std::vector<std::complex<double>> vec)
-{
-  for (int i = 0; i < vec.size (); i++)
-    {
-      vec[i] *= scalar;
-    }
-  return vec;
-}
-
-std::vector<std::complex<double>>
-operator+ (std::vector<std::complex<double>> vec1, std::vector<std::complex<double>> vec2)
-{
-  assert (vec1.size () == vec2.size ());
-  for (int i = 0; i < vec1.size (); i++)
-    {
-      vec1[i] += vec2[i];
-    }
-  return vec1;
-}
-
-bool
-operator== (std::vector<std::complex<double>> vec1, std::vector<std::complex<double>> vec2)
-{
-  assert (vec1.size () == vec2.size ());
-  for (int i = 0; i < vec1.size (); i++)
-    {
-      if (abs (norm (vec1[i] - vec2[i])) > EPS)
-        return false;
-    }
-  return true;
+    NS_ABORT_MSG_IF(fidelity < 0.0 || fidelity > 1.0,
+                    "A fidelity must lie in [0, 1], got " << fidelity);
+    const double diagonal = (2 * fidelity + 1) / 6;
+    const double offDiagonal = (4 * fidelity - 1) / 6;
+    const double mismatch = (1 - fidelity) / 3;
+    return {
+        {diagonal, 0.0},
+        {0.0, 0.0},
+        {0.0, 0.0},
+        {offDiagonal, 0.0},
+        {0.0, 0.0},
+        {mismatch, 0.0},
+        {0.0, 0.0},
+        {0.0, 0.0},
+        {0.0, 0.0},
+        {0.0, 0.0},
+        {mismatch, 0.0},
+        {0.0, 0.0},
+        {offDiagonal, 0.0},
+        {0.0, 0.0},
+        {0.0, 0.0},
+        {diagonal, 0.0},
+    };
 }
 
 unsigned
-Log2 (unsigned size)
+CountQubits(std::size_t size)
 {
-  unsigned log_2_size = -1;
-  for (unsigned i = size; i; i >>= 1)
+    NS_ABORT_MSG_IF(size == 0 || (size & (size - 1)) != 0,
+                    "The size of quantum data must be a power of two, got " << size);
+    unsigned count = 0;
+    while (size > 1)
     {
-      ++log_2_size;
+        size >>= 1;
+        ++count;
     }
-  return log_2_size;
+    return count;
 }
 
 std::vector<std::string>
-GetPreHalf (const std::vector<std::string> &qubits)
+GetFirstHalf(const std::vector<std::string>& qubits)
 {
-  std::vector<std::string> pre_half = {};
-  for (unsigned i = 0; i < qubits.size () / 2; ++i)
-    pre_half.push_back (qubits[i]);
-  return pre_half;
+    return {qubits.begin(), qubits.begin() + qubits.size() / 2};
 }
 
 std::vector<std::string>
-GetSufHalf (const std::vector<std::string> &qubits)
+GetSecondHalf(const std::vector<std::string>& qubits)
 {
-  std::vector<std::string> suf_half = {};
-  for (unsigned i = qubits.size () / 2; i < qubits.size (); ++i)
-    suf_half.push_back (qubits[i]);
-  return suf_half;
-}
-
-std::complex<double>
-PickOutcome (const double &prob)
-{
-  NS_LOG_INFO (LIGHT_YELLOW_CODE << "Picking outcome with probability distribution: [" << prob << ", " << 1 - prob << "]" << END_CODE);
-
-  double div = (double) (rand ()) / ((double) (RAND_MAX));
-  if (div < prob)
-    return {0.0, 0.0};
-  return {1.0, 0.0};
-}
-
-std::vector<std::complex<double>> GetEPRwithFidelity (const double &f)
-{
-  std::vector<std::complex<double>> epr_dm = {
-    {f + 0.5, 0.0}, {0.0, 0.0}, {0.0, 0.0}, {2 * f - 0.5, 0.0},
-    {0.0, 0.0}, {1.0 - f, 0.0}, {0.0, 0.0}, {0.0, 0.0},
-    {0.0, 0.0}, {0.0, 0.0}, {1.0 - f, 0.0}, {0.0, 0.0},
-    {2 * f - 0.5, 0.0}, {0.0, 0.0}, {0.0, 0.0}, {f + 0.5, 0.0}
-  };
-  for (auto &val : epr_dm)
-    {
-      val /= 3;
-    }
-  return epr_dm;
+    return {qubits.begin() + qubits.size() / 2, qubits.end()};
 }
 
 } // namespace ns3

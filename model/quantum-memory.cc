@@ -1,73 +1,83 @@
-#include "ns3/quantum-memory.h" // class QuantumMemory
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
-namespace ns3 {
+#include "quantum-memory.h"
 
-NS_LOG_COMPONENT_DEFINE ("QuantumMemory");
+#include "ns3/abort.h"
+#include "ns3/log.h"
 
-QuantumMemory::QuantumMemory (std::vector<std::string> qubits_) : m_qubits (qubits_)
+#include <algorithm>
+
+namespace ns3
 {
-}
 
-QuantumMemory::~QuantumMemory ()
-{
-  m_qubits.clear ();
-}
+NS_LOG_COMPONENT_DEFINE("QuantumMemory");
 
-QuantumMemory::QuantumMemory () : m_qubits ({})
-{
-}
+NS_OBJECT_ENSURE_REGISTERED(QuantumMemory);
 
 TypeId
-QuantumMemory::GetTypeId ()
+QuantumMemory::GetTypeId()
 {
-  static TypeId tid =
-      TypeId ("ns3::QuantumMemory").SetParent<Object> ().AddConstructor<QuantumMemory> ();
-  return tid;
+    static TypeId tid = TypeId("ns3::QuantumMemory")
+                            .SetParent<Object>()
+                            .SetGroupName("Quantum")
+                            .AddConstructor<QuantumMemory>();
+    return tid;
+}
+
+QuantumMemory::QuantumMemory(const std::vector<std::string>& qubits)
+    : m_qubits(qubits)
+{
+    NS_LOG_FUNCTION(this << qubits.size());
 }
 
 void
-QuantumMemory::AddQubit (std::string qubit)
+QuantumMemory::AddQubit(const std::string& qubit)
 {
-  m_qubits.push_back (qubit);
+    NS_LOG_FUNCTION(this << qubit);
+    m_qubits.push_back(qubit);
 }
 
 bool
-QuantumMemory::RemoveQubit (std::string qubit)
+QuantumMemory::RemoveQubit(const std::string& qubit)
 {
-  for (unsigned i = 0; i < m_qubits.size (); ++i)
+    NS_LOG_FUNCTION(this << qubit);
+    auto it = std::find(m_qubits.begin(), m_qubits.end(), qubit);
+    if (it == m_qubits.end())
     {
-      if (m_qubits[i] == qubit)
-        {
-          m_qubits.erase (m_qubits.begin () + i);
-          return true;
-        }
+        return false;
     }
-  return false;
+    m_qubits.erase(it);
+    return true;
 }
 
-unsigned
-QuantumMemory::GetSize () const
+std::size_t
+QuantumMemory::GetSize() const
 {
-  return m_qubits.size ();
+    return m_qubits.size();
 }
 
 std::string
-QuantumMemory::GetQubit (unsigned local) const
+QuantumMemory::GetQubit(std::size_t index) const
 {
-  return m_qubits[local];
+    NS_ABORT_MSG_IF(index >= m_qubits.size(),
+                    "No qubit at position " << index << " in a memory of size " << m_qubits.size());
+    return m_qubits[index];
+}
+
+std::vector<std::string>
+QuantumMemory::GetQubits() const
+{
+    return m_qubits;
 }
 
 bool
-QuantumMemory::ContainQubit (std::string qubit) const
+QuantumMemory::HasQubit(const std::string& qubit) const
 {
-  for (unsigned i = 0; i < m_qubits.size (); ++i)
-    {
-      if (m_qubits[i] == qubit)
-        {
-          return true;
-        }
-    }
-  return false;
+    return std::find(m_qubits.begin(), m_qubits.end(), qubit) != m_qubits.end();
 }
 
 } // namespace ns3

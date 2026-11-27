@@ -1,60 +1,49 @@
-// Note that Alice's app must be created before Bob's app.
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
-#ifndef DIST_EPR_HELPER_H
-#define DIST_EPR_HELPER_H
+#ifndef DISTRIBUTE_EPR_HELPER_H
+#define DISTRIBUTE_EPR_HELPER_H
 
-#include "ns3/application-container.h"
-#include "ns3/node-container.h"
-#include "ns3/object-factory.h"
-#include "ns3/ipv6-address.h"
+#include "quantum-application-helper.h"
 
-namespace ns3 {
-
-class QuantumPhyEntity;
-class QuantumChannel;
-
-class DistributeEPRSrcHelper
+namespace ns3
 {
-public:
-  DistributeEPRSrcHelper (Ptr<QuantumPhyEntity> qphyent, Ptr<QuantumChannel> conn);
 
-  ~DistributeEPRSrcHelper ();
-
-  void SetAttribute (std::string name, const AttributeValue &value);
-
-  ApplicationContainer Install (Ptr<Node> node) const;
-
-  ApplicationContainer Install (std::string nodeName) const;
-
-  ApplicationContainer Install (NodeContainer c) const;
-
-private:
-  Ptr<Application> InstallPriv (Ptr<Node> node) const;
-
-  ObjectFactory m_factory; //!< Object factory.
+/**
+ * @ingroup quantum
+ * Installs the source side of the distribution of Bell pairs; see QuantumNetStackHelper.
+ */
+class DistributeEprSrcHelper : public QuantumApplicationHelper
+{
+  public:
+    /**
+     * Constructor.
+     *
+     * @param qphyent The quantum physical entity of the network.
+     * @param channel The quantum channel from the source to the destination.
+     */
+    DistributeEprSrcHelper(Ptr<QuantumPhyEntity> qphyent, Ptr<QuantumChannel> channel);
 };
 
-class DistributeEPRDstHelper
+/**
+ * @ingroup quantum
+ * Installs the destination side of the distribution of Bell pairs; see QuantumNetStackHelper.
+ */
+class DistributeEprDstHelper : public QuantumApplicationHelper
 {
-public:
-  DistributeEPRDstHelper (Ptr<QuantumPhyEntity> qphyent, Ptr<QuantumChannel> conn);
-
-  ~DistributeEPRDstHelper ();
-
-  void SetAttribute (std::string name, const AttributeValue &value);
-
-  ApplicationContainer Install (Ptr<Node> node) const;
-
-  ApplicationContainer Install (std::string nodeName) const;
-
-  ApplicationContainer Install (NodeContainer c) const;
-
-private:
-  Ptr<Application> InstallPriv (Ptr<Node> node) const;
-
-  ObjectFactory m_factory; //!< Object factory.
+  public:
+    /**
+     * Constructor.
+     *
+     * @param qphyent The quantum physical entity of the network.
+     * @param channel The quantum channel from the source to the destination.
+     */
+    DistributeEprDstHelper(Ptr<QuantumPhyEntity> qphyent, Ptr<QuantumChannel> channel);
 };
 
 } // namespace ns3
 
-#endif /* DIST_EPR_HELPER_H */
+#endif /* DISTRIBUTE_EPR_HELPER_H */

@@ -1,51 +1,59 @@
-// Note that Alice's app must be created before Bob's app
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
 #ifndef ENT_SWAP_ADAPT_APP_H
 #define ENT_SWAP_ADAPT_APP_H
 
-#include "ns3/socket.h"
-#include "ns3/application.h"
+#include "quantum-application.h"
 
-#include <complex>
+namespace ns3
+{
 
-namespace ns3 {
-
-class QuantumPhyEntity;
 class QuantumMemory;
 
 /**
- * \brief Entanglement swapping application with (less gratifying an) adaptation.
- * 
- * This application is used to schedule a chained entanglement swapping
- * with long distance operations.
- * A longer EPR pair is gained at the cost of several shorter (more local) EPR pairs.
- * 
- * 1. Every node generates and distributes a EPR pair to its neighbor with the help of DistributeEPRApps.
- * 2. God pass control information from every node to the last.
- * 3. God apply controlled correction gates.
-*/
-class EntSwapAdaptApp : public Application
+ * @ingroup quantum
+ * A chain of entanglement swappings with adapted control flow.
+ *
+ * Instead of measuring at every repeater node, the application accumulates
+ * the X and Z flags of all repeater nodes in two ancilla qubits with
+ * controlled gates, traces the repeater qubits out, and applies the
+ * corrections of the last node controlled by the ancillas. One run covers all
+ * measurement branches, and the final fidelity is exact.
+ *
+ * The application runs on the last node of the chain. Entry i of the two
+ * memories names the qubits of node i: the one entangled with node i - 1 and
+ * the one entangled with node i + 1. The Bell pairs must exist when the
+ * application starts. *
+ * The application computes no result itself. When its Finished trace fires,
+ * read what you need from QuantumPhyEntity, for example with
+ * PeekDensityMatrix() or CalculateFidelity().
+ */
+class EntSwapAdaptApp : public QuantumApplication
 {
-public:
-  EntSwapAdaptApp (Ptr<QuantumPhyEntity> qphyent_,
-                   Ptr<QuantumMemory> qubits_former_,
-                   Ptr<QuantumMemory> qubits_latter_);
-  virtual ~EntSwapAdaptApp ();
+  public:
+    /**
+     * Get the type ID.
+     * @return The object TypeId.
+     */
+    static TypeId GetTypeId();
 
-  EntSwapAdaptApp ();
-  static TypeId GetTypeId ();
+  protected:
+    void DoDispose() override;
 
-  /**
-   * \brief Schedule all events in the chained entanglement swapping.
-  */
-  void EntanglementSwapping ();
+  private:
+    void DoStartApplication() override;
 
-private:
-  virtual void StartApplication ();
+    /**
+     * Run the whole chain of swappings.
+     */
+    void EntanglementSwapping();
 
-  Ptr<QuantumPhyEntity> m_qphyent; /**< The quantum physical entity. */
-  Ptr<QuantumMemory> m_qubits_former; /**< The former qubit of this owner. */
-  Ptr<QuantumMemory> m_qubits_latter; /**< The latter qubit of this owner. */
+    Ptr<QuantumMemory> m_qubitsFormer; //!< Per node, the qubit entangled with the previous node
+    Ptr<QuantumMemory> m_qubitsLatter; //!< Per node, the qubit entangled with the next node
 };
 
 } // namespace ns3

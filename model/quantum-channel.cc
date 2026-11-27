@@ -1,86 +1,71 @@
-#include "ns3/quantum-channel.h"
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
-#include "ns3/quantum-basis.h"
-#include "ns3/quantum-node.h" // class QuantumNode
-#include "ns3/quantum-phy-entity.h" // class QuantumPhyEntity
+#include "quantum-channel.h"
 
-namespace ns3 {
+#include "quantum-node.h"
 
-NS_LOG_COMPONENT_DEFINE ("QuantumChannel");
+#include "ns3/abort.h"
+#include "ns3/log.h"
 
-QuantumChannel::QuantumChannel (const std::pair<std::string, std::string> &conn)
-    : m_src_owner (conn.first), m_dst_owner (conn.second)
+namespace ns3
 {
-}
 
-QuantumChannel::QuantumChannel (std::string src_owner_, std::string dst_owner_)
-    : m_src_owner (src_owner_), m_dst_owner (dst_owner_)
-{
-}
+NS_LOG_COMPONENT_DEFINE("QuantumChannel");
 
-QuantumChannel::QuantumChannel (const std::pair<Ptr<QuantumNode>, Ptr<QuantumNode>> &conn)
-    : m_src_owner (conn.first->GetOwner ()), m_dst_owner (conn.second->GetOwner ())
-{
-}
-
-QuantumChannel::QuantumChannel (Ptr<QuantumNode> src, Ptr<QuantumNode> dst)
-    : m_src_owner (src->GetOwner ()), m_dst_owner (dst->GetOwner ())
-{
-}
-
-QuantumChannel::~QuantumChannel ()
-{
-}
-
-QuantumChannel::QuantumChannel () : m_src_owner (""), m_dst_owner ("")
-{
-}
+NS_OBJECT_ENSURE_REGISTERED(QuantumChannel);
 
 TypeId
-QuantumChannel::GetTypeId ()
+QuantumChannel::GetTypeId()
 {
-  static TypeId tid =
-      TypeId ("ns3::QuantumChannel").SetParent<Object> ().AddConstructor<QuantumChannel> ();
-  return tid;
+    // The owners are constructor arguments, not attributes: an attribute would
+    // reset them to its initial value right after construction.
+    static TypeId tid = TypeId("ns3::QuantumChannel")
+                            .SetParent<Object>()
+                            .SetGroupName("Quantum")
+                            .AddConstructor<QuantumChannel>();
+    return tid;
 }
 
-Ptr<QuantumNode>
-QuantumChannel::GetSrc (Ptr<QuantumPhyEntity> qphyent) const
+QuantumChannel::QuantumChannel(const std::string& srcOwner, const std::string& dstOwner)
+    : m_srcOwner(srcOwner),
+      m_dstOwner(dstOwner)
 {
-  return qphyent->GetNode (m_src_owner);
+    NS_LOG_FUNCTION(this << srcOwner << dstOwner);
 }
 
-Ptr<QuantumNode>
-QuantumChannel::GetDst (Ptr<QuantumPhyEntity> qphyent) const
+QuantumChannel::QuantumChannel(Ptr<QuantumNode> src, Ptr<QuantumNode> dst)
+    : QuantumChannel(src->GetOwner(), dst->GetOwner())
 {
-  return qphyent->GetNode (m_dst_owner);
-}
-
-std::string
-QuantumChannel::GetSrcOwner () const
-{
-  assert (m_src_owner != "");
-  return m_src_owner;
 }
 
 std::string
-QuantumChannel::GetDstOwner () const
+QuantumChannel::GetSrcOwner() const
 {
-  assert (m_dst_owner != "");
-  return m_dst_owner;
+    NS_ABORT_MSG_IF(m_srcOwner.empty(), "The quantum channel has no source");
+    return m_srcOwner;
 }
 
-void
-QuantumChannel::SetDepolarModel (double fidel, Ptr<QuantumPhyEntity> qphyent)
+std::string
+QuantumChannel::GetDstOwner() const
 {
-  qphyent->SetDepolarModel ({m_src_owner, m_dst_owner}, fidel);
+    NS_ABORT_MSG_IF(m_dstOwner.empty(), "The quantum channel has no destination");
+    return m_dstOwner;
 }
 
-bool
-QuantumChannel::operator<(const QuantumChannel &other) const
+std::pair<std::string, std::string>
+QuantumChannel::GetOwners() const
 {
-  return m_src_owner < other.m_src_owner ||
-         (m_src_owner == other.m_src_owner && m_dst_owner < other.m_dst_owner);
+    return {GetSrcOwner(), GetDstOwner()};
+}
+
+std::string
+QuantumChannel::GetServiceName(const std::string& protocol) const
+{
+    return protocol + ":" + GetSrcOwner() + "->" + GetDstOwner();
 }
 
 } // namespace ns3

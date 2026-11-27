@@ -1,149 +1,139 @@
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
+
 #ifndef QUANTUM_ERROR_MODEL_H
 #define QUANTUM_ERROR_MODEL_H
 
+#include "quantum-operation.h"
+
+#include "ns3/nstime.h"
 #include "ns3/object.h"
-#include "ns3/quantum-basis.h"
 
-namespace ns3 {
+#include <string>
 
-class QuantumPhyEntity;
+namespace ns3
+{
 
-
+/**
+ * @ingroup quantum
+ * Base class of the noise models that act on one qubit.
+ *
+ * A model only describes the noise. QuantumPhyEntity decides when a model
+ * applies and to which qubit.
+ */
 class QuantumErrorModel : public Object
 {
+  public:
+    /**
+     * Get the type ID.
+     * @return The object TypeId.
+     */
+    static TypeId GetTypeId();
 
-protected:
-  
-  /** Whether the error model is time-dependent. */
-  bool m_time_dep;
+    /**
+     * Get the noise that the model produces over a duration.
+     *
+     * @param elapsed Time during which the noise acts on the qubit.
+     * @return The noise, as an operation on one qubit.
+     */
+    virtual QuantumOperation GetOperation(Time elapsed) const = 0;
 
-  /** Type description of the error model. */
-  std::string m_type_desc;
-
-public:
-
-  QuantumErrorModel (bool time_dependent_);
-
-  QuantumErrorModel ();
-  void DoDispose (void) override;
-  static TypeId GetTypeId (void);
-
-  std::string GetTypeDesc () const;
-
-  /** 
-   * \brief Apply the error model to some qubits in some quantum circuit.
-   * \param qphyent Quantum physical entity encapsulating the quantum circuit.
-   * \param qubits Names of the qubits to be applied the error model.
-   * \param moment Time when the error model is applied.
-  */
-  virtual void ApplyErrorModel (Ptr<QuantumPhyEntity> qphyent, const std::vector<std::string> &qubits,
-                                const Time &moment) const = 0;
-};
-
-
-
-class DephaseModel : public QuantumErrorModel
-{
-
-private:
-
-  /** Dephase rate. */
-  const double m_rate;
-
-public:
-
-  DephaseModel (double rate_);
-
-  DephaseModel ();
-  void DoDispose (void) override;
-  static TypeId GetTypeId (void);
-
-  /**
-   * \brief Apply the dephasing model to some qubits in some quantum circuit.
-   * \param qphyent Quantum physical entity encapsulating the quantum circuit.
-   * \param qubits Names of the qubits to be applied the dephasing model.
-   * \param moment Time when the dephasing model is applied.
-  */
-  void ApplyErrorModel (Ptr<QuantumPhyEntity> qphyent, const std::vector<std::string> &qubits,
-                        const Time &moment) const override;
+    /**
+     * Describe the model, for logging.
+     *
+     * @return A one-line description.
+     */
+    virtual std::string GetDescription() const = 0;
 };
 
 /**
- * \brief Default dephasing model with rate 0.001.
- * \note If user does not specify a dephasing model, this model will be used.
-*/
-const DephaseModel default_dephase_model = DephaseModel (1.);
-
-
-
-class DepolarModel : public QuantumErrorModel
-{
-
-private:
-  
-  /** Outcoming fidelity of the EPR pairs distributed through a channel. */
-  const double m_fidel;
-
-public:
-
-  DepolarModel (double fidel_);
-
-  DepolarModel ();
-  void DoDispose (void) override;
-  static TypeId GetTypeId (void);
-
-  /**
-   * \brief Apply the depolarizing model to a latter qubit in a EPR pair in a quantum circuit.
-   * \param qphyent Quantum physical entity encapsulating the quantum circuit.
-   * \param qubits Names of the qubit to be applied the depolarizing model.
-   * \param moment Time when the depolarizing model is applied.
-   * 
-   * \note The qubits size should be 1.
-  */
-  void ApplyErrorModel (Ptr<QuantumPhyEntity> qphyent, const std::vector<std::string> &qubits,
-                        const Time &moment) const override;
-  double GetFidelity () const;
-};
-
-/** 
- * \brief Default depolarizing model with outcoming fidelity 0.95.
- * \note If user does not specify a depolarizing model, this model will be used.
-*/
-const DepolarModel default_depolar_model = DepolarModel (0.95);
-
-
-
+ * @ingroup quantum
+ * Dephasing of a qubit that waits in a quantum memory.
+ *
+ * Over a duration t the qubit suffers a Pauli Z error with probability
+ * (1 - exp(-t / T)) / 2, where T is the coherence time.
+ */
 class TimeModel : public QuantumErrorModel
 {
+  public:
+    /**
+     * Get the type ID.
+     * @return The object TypeId.
+     */
+    static TypeId GetTypeId();
 
-private:
+    QuantumOperation GetOperation(Time elapsed) const override;
+    std::string GetDescription() const override;
 
-  /** Dephase rate. */
-  const double m_rate;
-
-public:
-
-  TimeModel (double rate_);
-
-  TimeModel ();
-  void DoDispose (void) override;
-  static TypeId GetTypeId (void);
-
-  /**
-   * \brief Apply the time relevant dephasing model to some qubits in some quantum circuit.
-   * \param qphyent Quantum physical entity encapsulating the quantum circuit.
-   * \param qubits Names of the qubits to be applied the time relevant dephasing model.
-   * \param moment Time when the model is applied.
-  */
-  void ApplyErrorModel (Ptr<QuantumPhyEntity> qphyent, const std::vector<std::string> &qubits,
-                        const Time &moment) const override;
+  private:
+    Time m_coherenceTime; //!< Coherence time T
 };
 
 /**
- * \brief Default time relevant dephasing model.
- * \note If user does not specify a time relevant dephasing model, this model will be used.
-*/
-const TimeModel default_time_model = TimeModel (1.);
+ * @ingroup quantum
+ * Dephasing of a qubit caused by a gate.
+ *
+ * The gate is modeled as a wait of fixed duration in a memory with the given
+ * coherence time; see TimeModel for the error probability.
+ */
+class DephaseModel : public QuantumErrorModel
+{
+  public:
+    /**
+     * Get the type ID.
+     * @return The object TypeId.
+     */
+    static TypeId GetTypeId();
+
+    /**
+     * @copydoc QuantumErrorModel::GetOperation
+     * @note The model ignores @p elapsed and uses its GateDuration attribute.
+     */
+    QuantumOperation GetOperation(Time elapsed) const override;
+    std::string GetDescription() const override;
+
+  private:
+    Time m_coherenceTime; //!< Coherence time T
+    Time m_gateDuration;  //!< Duration of the gate
+};
+
+/**
+ * @ingroup quantum
+ * Depolarization of a qubit sent over a quantum channel.
+ *
+ * The qubit is left alone with a probability equal to the fidelity, and
+ * otherwise suffers a Pauli X, Y or Z error with equal probabilities. Applied
+ * to one half of a Bell pair, the model yields a Werner state of that fidelity.
+ */
+class DepolarModel : public QuantumErrorModel
+{
+  public:
+    /**
+     * Get the type ID.
+     * @return The object TypeId.
+     */
+    static TypeId GetTypeId();
+
+    /**
+     * @copydoc QuantumErrorModel::GetOperation
+     * @note The model ignores @p elapsed.
+     */
+    QuantumOperation GetOperation(Time elapsed) const override;
+    std::string GetDescription() const override;
+
+    /**
+     * Get the fidelity.
+     *
+     * @return The probability that the qubit is left alone.
+     */
+    double GetFidelity() const;
+
+  private:
+    double m_fidelity; //!< Probability that the qubit is left alone
+};
 
 } // namespace ns3
 

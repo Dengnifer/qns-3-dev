@@ -1,34 +1,47 @@
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
+
 #ifndef DISTILL_NESTED_HELPER_H
 #define DISTILL_NESTED_HELPER_H
 
-#include "ns3/application-container.h"
-#include "ns3/node-container.h"
-#include "ns3/object-factory.h"
-#include "ns3/ipv6-address.h"
+#include "quantum-application-helper.h"
 
-
-namespace ns3 {
-
-class QuantumPhyEntity;
-class QuantumChannel;
-
-class DistillNestedHelper
+namespace ns3
 {
-public:
-  DistillNestedHelper (Ptr<QuantumPhyEntity> qphyent, bool checker, Ptr<QuantumChannel> conn);
 
-  void SetAttribute (std::string name, const AttributeValue &value);
+/**
+ * @ingroup quantum
+ * Installs DistillNestedSrcApp on the source of a quantum channel.
+ */
+class DistillNestedSrcHelper : public QuantumApplicationHelper
+{
+  public:
+    /**
+     * Constructor.
+     *
+     * @param qphyent The quantum physical entity of the network.
+     * @param channel The quantum channel from Alice to Bob.
+     */
+    DistillNestedSrcHelper(Ptr<QuantumPhyEntity> qphyent, Ptr<QuantumChannel> channel);
+};
 
-  ApplicationContainer Install (Ptr<Node> node) const;
-
-  ApplicationContainer Install (std::string nodeName) const;
-
-  ApplicationContainer Install (NodeContainer c) const;
-
-private:
-  Ptr<Application> InstallPriv (Ptr<Node> node) const;
-
-  ObjectFactory m_factory; //!< Object factory.
+/**
+ * @ingroup quantum
+ * Installs DistillNestedDstApp on the destination of a quantum channel.
+ */
+class DistillNestedDstHelper : public QuantumApplicationHelper
+{
+  public:
+    /**
+     * Constructor.
+     *
+     * @param qphyent The quantum physical entity of the network.
+     * @param channel The quantum channel from Alice to Bob.
+     */
+    DistillNestedDstHelper(Ptr<QuantumPhyEntity> qphyent, Ptr<QuantumChannel> channel);
 };
 
 } // namespace ns3

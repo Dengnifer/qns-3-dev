@@ -1,474 +1,449 @@
-#include "ns3/quantum-phy-entity.h"
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
-#include "ns3/internet-module.h" // class InternetStackHelper, Ipv6AddressHelper, Ipv6InterfaceContainer
-#include "ns3/csma-module.h" // class CsmaHelper
-#include "ns3/application.h" // class Application
+#include "quantum-phy-entity.h"
 
-#include "ns3/quantum-basis.h"
-#include "ns3/quantum-network-simulator.h" // class QuantumNetworkSimulator
-#include "ns3/quantum-operation.h" // class QuantumOperation
-#include "ns3/quantum-node.h" // class QuantumNode
-#include "ns3/quantum-error-model.h" // class QuantumErrorModel
+#include "quantum-channel.h"
+#include "quantum-error-model.h"
+#include "quantum-memory.h"
+#include "quantum-node.h"
+#include "quantum-operation.h"
 
-namespace ns3 {
+#include "ns3/abort.h"
+#include "ns3/application.h"
+#include "ns3/double.h"
+#include "ns3/log.h"
+#include "ns3/node.h"
+#include "ns3/pointer.h"
+#include "ns3/random-variable-stream.h"
+#include "ns3/simulator.h"
 
-NS_LOG_COMPONENT_DEFINE ("QuantumPhyEntity");
+#include <algorithm>
 
-QuantumPhyEntity::QuantumPhyEntity (const std::vector<std::string> &owners)
-    : m_qnetsim (QuantumNetworkSimulator (owners)), // TODO: CreateObject, release
-
-      m_conn2apps ({}),
-
-      m_qubit2time (std::map<std::string, Time> ()),
-      m_gate2model ({}),
-      m_conn2model ({}),
-      m_node2model ({})
-
+namespace ns3
 {
-  /* util */
 
-  // QuantumNode
-  for (const std::string &owner : owners)
-    {
-      Ptr<QuantumNode> pnode = CreateObject<QuantumNode> (this, owner);
-      m_owner2pnode[owner] = pnode;
-      m_gate2model[pnode] = {};
-    }
+NS_LOG_COMPONENT_DEFINE("QuantumPhyEntity");
+
+NS_OBJECT_ENSURE_REGISTERED(QuantumPhyEntity);
+
+TypeId
+QuantumPhyEntity::GetTypeId()
+{
+    static TypeId tid =
+        TypeId("ns3::QuantumPhyEntity")
+            .SetParent<Object>()
+            .SetGroupName("Quantum")
+            .AddConstructor<QuantumPhyEntity>()
+            .AddAttribute("DefaultTimeModel",
+                          "Memory noise of the qubits of an owner without a model of its own. "
+                          "A TimeModel with default attributes if left unset.",
+                          PointerValue(),
+                          MakePointerAccessor(&QuantumPhyEntity::m_defaultTimeModel),
+                          MakePointerChecker<QuantumErrorModel>())
+            .AddAttribute("DefaultDephaseModel",
+                          "Noise of a gate without a model of its own. "
+                          "A DephaseModel with default attributes if left unset.",
+                          PointerValue(),
+                          MakePointerAccessor(&QuantumPhyEntity::m_defaultDephaseModel),
+                          MakePointerChecker<QuantumErrorModel>())
+            .AddAttribute("DefaultDepolarModel",
+                          "Noise of a quantum channel without a model of its own. "
+                          "A DepolarModel with default attributes if left unset.",
+                          PointerValue(),
+                          MakePointerAccessor(&QuantumPhyEntity::m_defaultDepolarModel),
+                          MakePointerChecker<QuantumErrorModel>())
+            .AddTraceSource("Measure",
+                            "A qubit has been measured.",
+                            MakeTraceSourceAccessor(&QuantumPhyEntity::m_measureTrace),
+                            "ns3::QuantumPhyEntity::MeasureTracedCallback");
+    return tid;
 }
 
-QuantumPhyEntity::~QuantumPhyEntity ()
+QuantumPhyEntity::QuantumPhyEntity()
+    : m_engine(std::make_unique<QuantumNetworkSimulator>()),
+      m_godMemory(CreateObject<QuantumMemory>()),
+      m_random(CreateObject<UniformRandomVariable>())
 {
+    NS_LOG_FUNCTION(this);
 }
 
-QuantumPhyEntity::QuantumPhyEntity ()
-    : m_qnetsim (QuantumNetworkSimulator ()),
-      m_conn2apps ({}),
-
-      m_qubit2time ({}),
-      m_gate2model ({}),
-      m_conn2model ({}),
-      m_node2model ({})
+QuantumPhyEntity::~QuantumPhyEntity()
 {
+    NS_LOG_FUNCTION(this);
 }
 
 void
-QuantumPhyEntity::DoDispose (void)
+QuantumPhyEntity::NotifyConstructionCompleted()
 {
-  Object::DoDispose ();
-}
-
-TypeId
-QuantumPhyEntity::GetTypeId (void)
-{
-  static TypeId tid = TypeId ("ns3::QuantumPhyEntity").SetParent<Object> ();
-  return tid;
-}
-
-/* circuit */
-
-bool
-QuantumPhyEntity::GenerateQubitsPure (
-    const std::string &owner, // owner generating the qubits
-    const std::vector<std::complex<double>> &data, // state vector of the qubits
-    const std::vector<std::string> &qubits // names of the qubits
-)
-{
-  Time moment = Simulator::Now ();
-  if (owner != "God" && CheckOwned (owner, qubits))
+    NS_LOG_FUNCTION(this);
+    Object::NotifyConstructionCompleted();
+    // Attribute construction has run: fill in the models the user did not set.
+    if (!m_defaultTimeModel)
     {
-      return false;
+        m_defaultTimeModel = CreateObject<TimeModel>();
     }
-
-  bool succeed = m_qnetsim.GenerateQubitsPure (owner, data, qubits);
-
-  Ptr<QuantumNode> pnode = m_owner2pnode[owner];
-
-  for (unsigned i = 0; i < qubits.size (); ++i)
+    if (!m_defaultDephaseModel)
     {
-      std::string qubit = qubits[i];
-
-      pnode->AddQubit (qubit);
-
-      Ptr<QuantumErrorModel> pmodel;
-      if (m_node2model.find (pnode) !=
-          m_node2model.end ()) // the owner's qubit generator has been specified
-        pmodel = m_node2model[pnode];
-      else
-        pmodel = default_time_model.GetObject<QuantumErrorModel> ();
-      SetErrorModel (pmodel, qubit);
-
-      m_qubit2time[qubit] = moment;
+        m_defaultDephaseModel = CreateObject<DephaseModel>();
     }
-
-  return succeed;
+    if (!m_defaultDepolarModel)
+    {
+        m_defaultDepolarModel = CreateObject<DepolarModel>();
+    }
 }
 
-bool
-QuantumPhyEntity::GenerateQubitsMixed (
-    const std::string &owner,
-    const std::vector<std::complex<double>> &data,
-    const std::vector<std::string> &qubits
-)
+void
+QuantumPhyEntity::DoDispose()
 {
-  Time moment = Simulator::Now ();
-  if (owner != "God" && CheckOwned (owner, qubits))
-    {
-      return false;
-    }
-
-  bool succeed = m_qnetsim.GenerateQubitsMixed (owner, data, qubits);
-
-  Ptr<QuantumNode> pnode = m_owner2pnode[owner];
-
-  for (unsigned i = 0; i < qubits.size (); ++i)
-    {
-      std::string qubit = qubits[i];
-
-      pnode->AddQubit (qubit);
-
-      Ptr<QuantumErrorModel> pmodel;
-      if (m_node2model.find (pnode) !=
-          m_node2model.end ()) // the owner's qubit generator has been specified
-        pmodel = m_node2model[pnode];
-      else
-        pmodel = default_time_model.GetObject<QuantumErrorModel> ();
-      SetErrorModel (pmodel, qubit);
-
-      m_qubit2time[qubit] = moment;
-    }
-
-  return succeed;
-}
-
-bool
-QuantumPhyEntity::ApplyGate (
-    const std::string &owner,
-    const std::string &gate,
-    const std::vector<std::complex<double>> &data,
-    const std::vector<std::string> &qubits
-)
-{
-  Time moment = Simulator::Now ();
-  assert (CheckOwned (owner, qubits));
-
-  for (const std::string &qubit : qubits)
-    {
-      NS_LOG_LOGIC ("Updating qubit " << qubit);
-      ApplyErrorModel ({qubit}, moment);
-    }
-
-  bool succeed = m_qnetsim.ApplyGate (owner, gate, data, qubits);
-
-  if (owner != "God")
-    ApplyErrorModel (owner, gate, qubits, moment);
-
-  return succeed;
-}
-
-bool
-QuantumPhyEntity::ApplyOperation (
-    const QuantumOperation &quantumOperation,
-    const std::vector<std::string> &qubits
-)
-{
-  Time moment = Simulator::Now ();
-  bool succeed = m_qnetsim.ApplyOperation (quantumOperation, qubits);
-
-  // update qubit2time only if the moment param has an actual meaning
-  if (moment != Seconds (-1))
-    {
-      for (const std::string &qubit : qubits)
-        {
-          m_qubit2time[qubit] = moment;
-        }
-    }
-  return succeed;
-}
-
-bool
-QuantumPhyEntity::ApplyControlledOperation (
-    const std::string &orig_owner,
-    const std::string &orig_gate,
-    const std::string &gate,
-    const std::vector<std::complex<double>> &data, const std::vector<std::string> &control_qubits,
-    const std::vector<std::string> &target_qubits)
-{
-  bool succeed = m_qnetsim.ApplyControlledOperation (orig_owner, orig_gate, gate, data,
-                                                    control_qubits, target_qubits);
-
-  ApplyErrorModel (orig_owner, orig_gate, target_qubits);
-
-  return succeed;
-}
-
-std::pair<unsigned, std::vector<double>>
-QuantumPhyEntity::Measure (const std::string &owner, const std::vector<std::string> &qubits)
-{
-  Time moment = Simulator::Now ();
-  assert (CheckOwned (owner, qubits));
-  for (const std::string &q : m_qnetsim.m_qubits_all)
-    {
-      if (!CheckValid ({q}))
-        {
-          continue;
-        }
-      ApplyErrorModel ({q}, moment);
-    }
-
-  return m_qnetsim.Measure (owner, qubits);
-}
-
-std::vector<std::complex<double>>
-QuantumPhyEntity::PeekDM (
-    const std::string &owner,
-    const std::vector<std::string> &qubits,
-    std::vector<std::complex<double>> &dm
-)
-{
-  if (owner != "God")
-    {
-      assert (CheckOwned (owner, qubits));
-    }
-
-  return m_qnetsim.PeekDM (owner, qubits, dm);
-}
-
-bool
-QuantumPhyEntity::PartialTrace (
-  const std::vector<std::string> &qubits
-)
-{
-  Time moment = Simulator::Now ();
-  for (const std::string &qubit : qubits)
-    {
-      ApplyErrorModel ({qubit}, moment);
-    }
-
-  return m_qnetsim.PartialTrace (qubits);
-}
-
-std::vector<std::complex<double>>
-QuantumPhyEntity::Contract (const std::string &optimizer)
-{
-  return m_qnetsim.Contract (optimizer);
+    NS_LOG_FUNCTION(this);
+    // Release the objects that point back to this entity. The engine stays, so
+    // that results can still be read after Simulator::Destroy().
+    m_nodes.clear();
+    m_apps.clear();
+    Object::DoDispose();
 }
 
 Ptr<QuantumNode>
-QuantumPhyEntity::GetNode (const std::string &owner)
+QuantumPhyEntity::AddNode(Ptr<Node> node, const std::string& owner)
 {
-  return m_owner2pnode[owner];
+    NS_LOG_FUNCTION(this << node << owner);
+    NS_ABORT_MSG_IF(owner.empty(), "A quantum node needs an owner name");
+    NS_ABORT_MSG_IF(owner == QNS_GOD_OWNER, "The owner name " << owner << " is reserved");
+    NS_ABORT_MSG_IF(m_nodes.count(owner), "The owner name " << owner << " is already in use");
+    NS_ABORT_MSG_IF(node->GetObject<QuantumNode>(), "The node is already a quantum node");
+
+    Ptr<QuantumNode> quantumNode = CreateObject<QuantumNode>(Ptr<QuantumPhyEntity>(this), owner);
+    node->AggregateObject(quantumNode);
+    m_nodes[owner] = quantumNode;
+    m_owners.push_back(owner);
+    return quantumNode;
+}
+
+Ptr<QuantumNode>
+QuantumPhyEntity::GetQuantumNode(const std::string& owner) const
+{
+    auto it = m_nodes.find(owner);
+    NS_ABORT_MSG_IF(it == m_nodes.end(), "No quantum node is owned by " << owner);
+    return it->second;
+}
+
+std::vector<std::string>
+QuantumPhyEntity::GetOwners() const
+{
+    return m_owners;
+}
+
+Ptr<QuantumMemory>
+QuantumPhyEntity::GetMemory(const std::string& owner) const
+{
+    return owner == QNS_GOD_OWNER ? m_godMemory : GetQuantumNode(owner)->GetQuantumMemory();
 }
 
 void
-QuantumPhyEntity::SetErrorModel (Ptr<QuantumErrorModel> pmodel, const std::string &qubit)
+QuantumPhyEntity::RegisterQubits(const std::string& owner, const std::vector<std::string>& qubits)
 {
-  NS_LOG_LOGIC ("Setting error model " << pmodel->GetTypeDesc () << " to qubit " << qubit);
-  m_qubit2model[qubit] = pmodel;
-}
-
-void
-QuantumPhyEntity::SetDephaseModel (const std::string &owner,
-                                   const std::string &gate,
-                                   double rate
-)
-{
-  Ptr<QuantumErrorModel> pmodel = CreateObject<DephaseModel> (rate);
-  NS_LOG_LOGIC ("Setting dephase model " << pmodel->GetTypeDesc () << " to gate " << gate
-                                         << " of node " << owner);
-  Ptr<QuantumNode> pnode = m_owner2pnode[owner];
-
-  m_gate2model[pnode][gate] = pmodel;
-}
-
-void
-QuantumPhyEntity::ApplyErrorModel ( // using DephaseModel
-    const std::string &owner, const std::string &gate, const std::vector<std::string> &qubits,
-    const Time &moment)
-{
-  Ptr<QuantumNode> pnode = m_owner2pnode[owner];
-
-  for (const std::string &qubit : qubits)
-    { // default
-      if (m_gate2model[pnode].find (gate) == m_gate2model[pnode].end ())
-        {
-          NS_LOG_LOGIC ("Using default DephaseModel");
-          default_dephase_model.ApplyErrorModel (this, {qubit},
-                                                 Seconds (GATE_DURATION + moment.GetSeconds ()));
-        }
-      else
-        { // specified
-          m_gate2model[pnode][gate]->ApplyErrorModel (this, {qubit},
-                                                      Seconds (GATE_DURATION + moment.GetSeconds ()));
-        }
-    }
-}
-void
-QuantumPhyEntity::SetDepolarModel (std::pair<std::string, std::string> conn, double fidel)
-{
-  Ptr<QuantumErrorModel> pmodel = CreateObject<DepolarModel> (fidel);
-  NS_LOG_LOGIC ("Setting depolar model " << pmodel->GetTypeDesc () << " to connection " << conn.first
-                                         << " <--> " << conn.second);
-  m_conn2model[conn] = pmodel;
-}
-void
-QuantumPhyEntity::ApplyErrorModel ( // using DepolarModel
-    std::pair<std::string, std::string> conn, const std::pair<std::string, std::string> &epr)
-{
-  NS_LOG_LOGIC ("Applying depolar error to EPR pair consisting of "
-                << epr.first << " and " << epr.second << " using DepolarModel between "
-                << conn.first << " and " << conn.second
-                << " at time " << Simulator::Now ());
-
-  for (auto [conn, pmodel] : m_conn2model)
+    Ptr<QuantumMemory> memory = GetMemory(owner);
+    auto it = m_ownerModel.find(owner);
+    Ptr<QuantumErrorModel> model = it == m_ownerModel.end() ? m_defaultTimeModel : it->second;
+    for (const auto& qubit : qubits)
     {
-      if (conn.first == "" && conn.second == "")
-        {
-          NS_LOG_LOGIC ("Skipping default DepolarModel");
-          continue;
-        }
-      // NS_LOG_LOGIC ("Connection " << conn.first << " <--> " << conn.second << " has "
-      //                             << pmodel->GetTypeDesc ());
-    }
-  if (m_conn2model.find (conn) == m_conn2model.end ())
-    { // default
-      NS_LOG_LOGIC ("Using default DepolarModel");
-      default_depolar_model.ApplyErrorModel (this, {epr.second}, Seconds (-1));
-    }
-  else
-    { // specified
-      NS_LOG_LOGIC ("Using specified DepolarModel");
-      m_conn2model[conn]->ApplyErrorModel (this, {epr.second}, Seconds (-1));
+        memory->AddQubit(qubit);
+        m_qubitModel[qubit] = model;
+        m_qubitTime[qubit] = Simulator::Now();
     }
 }
 
 void
-QuantumPhyEntity::SetTimeModel (const std::string &owner, double rate)
+QuantumPhyEntity::GenerateQubitsPure(const std::string& owner,
+                                     const QuantumTensorData& data,
+                                     const std::vector<std::string>& qubits)
 {
-  Ptr<QuantumErrorModel> pmodel = CreateObject<TimeModel> (rate);
-  NS_LOG_LOGIC ("Setting time model " << pmodel->GetTypeDesc () << " to node " << owner);
-  Ptr<QuantumNode> pnode = m_owner2pnode[owner];
-
-  m_node2model[pnode] = pmodel;
+    NS_LOG_FUNCTION(this << owner << qubits.size());
+    m_engine->GenerateQubitsPure(owner, data, qubits);
+    RegisterQubits(owner, qubits);
 }
+
 void
-QuantumPhyEntity::ApplyErrorModel ( // using TimeModel
-    const std::vector<std::string> &qubits, const Time &moment)
+QuantumPhyEntity::GenerateQubitsMixed(const std::string& owner,
+                                      const QuantumTensorData& data,
+                                      const std::vector<std::string>& qubits)
 {
-  for (const std::string &qubit : qubits)
+    NS_LOG_FUNCTION(this << owner << qubits.size());
+    m_engine->GenerateQubitsMixed(owner, data, qubits);
+    RegisterQubits(owner, qubits);
+}
+
+void
+QuantumPhyEntity::GenerateEpr(Ptr<QuantumChannel> channel,
+                              const std::pair<std::string, std::string>& epr)
+{
+    NS_LOG_FUNCTION(this << channel << epr.first << epr.second);
+    GenerateQubitsPure(channel->GetSrcOwner(), QNS_BELL, {epr.first, epr.second});
+}
+
+void
+QuantumPhyEntity::ApplyGate(const std::string& owner,
+                            const std::string& gate,
+                            const QuantumTensorData& data,
+                            const std::vector<std::string>& qubits)
+{
+    NS_LOG_FUNCTION(this << owner << gate << qubits.size());
+    NS_ABORT_MSG_UNLESS(CheckOwned(owner, qubits),
+                        owner << " applies " << gate << " to a qubit it does not own");
+    for (const auto& qubit : qubits)
     {
-      assert (m_qubit2model.find (qubit) != m_qubit2model.end ());
-      m_qubit2model[qubit]->ApplyErrorModel (this, qubits, moment);
+        ApplyMemoryNoise(qubit);
+    }
+    m_engine->ApplyGate(owner, gate, data, qubits);
+    if (owner != QNS_GOD_OWNER)
+    {
+        ApplyGateNoise(owner, gate, qubits);
     }
 }
 
-
-
-
-/* network */
-
 void
-QuantumPhyEntity::GenerateEPR (Ptr<QuantumChannel> qconn,
-                               const std::pair<std::string, std::string> &epr)
+QuantumPhyEntity::ApplyOperation(const QuantumOperation& operation,
+                                 const std::vector<std::string>& qubits)
 {
-  NS_LOG_LOGIC ("Generating EPR pair consisting of " << epr.first << " and " << epr.second);
-  GenerateQubitsPure (qconn->GetSrcOwner (), q_bell, {epr.first, epr.second});
+    NS_LOG_FUNCTION(this << qubits.size());
+    m_engine->ApplyOperation(operation, qubits);
+    for (const auto& qubit : qubits)
+    {
+        m_qubitTime[qubit] = Simulator::Now();
+    }
 }
 
-double 
-QuantumPhyEntity::CalculateFidelity (const std::pair<std::string, std::string> &epr, double &fidel)
+void
+QuantumPhyEntity::ApplyControlledOperation(const std::string& origOwner,
+                                           const std::string& origGate,
+                                           const std::string& gate,
+                                           const QuantumTensorData& data,
+                                           const std::vector<std::string>& controlQubits,
+                                           const std::vector<std::string>& targetQubits)
 {
-  return m_qnetsim.CalculateFidelity (epr, fidel);
+    NS_LOG_FUNCTION(this << origOwner << origGate << gate);
+    // A controlled gate takes its targets first; see the standard gates.
+    std::vector<std::string> qubits = targetQubits;
+    qubits.insert(qubits.end(), controlQubits.begin(), controlQubits.end());
+    for (const auto& qubit : qubits)
+    {
+        ApplyMemoryNoise(qubit);
+    }
+    m_engine->ApplyGate(QNS_GOD_OWNER, gate, data, qubits);
+    if (origOwner != QNS_GOD_OWNER)
+    {
+        ApplyGateNoise(origOwner, origGate, targetQubits);
+    }
 }
 
+QuantumMeasurement
+QuantumPhyEntity::Measure(const std::string& owner, const std::string& qubit)
+{
+    NS_LOG_FUNCTION(this << owner << qubit);
+    NS_ABORT_MSG_UNLESS(CheckOwned(owner, {qubit}),
+                        owner << " measures the qubit " << qubit << " it does not own");
+    // The outcome depends on the whole state, so bring every qubit up to date.
+    for (const auto& valid : m_engine->GetValidQubits())
+    {
+        ApplyMemoryNoise(valid);
+    }
+    const QuantumMeasurement result = m_engine->Measure(owner, qubit, m_random->GetValue());
+    m_measureTrace(owner, qubit, result.outcome, result.distribution[result.outcome]);
+    return result;
+}
 
-/* util */
+double
+QuantumPhyEntity::PostSelect(const std::string& owner, const std::string& qubit, unsigned outcome)
+{
+    NS_LOG_FUNCTION(this << owner << qubit << outcome);
+    NS_ABORT_MSG_UNLESS(CheckOwned(owner, {qubit}),
+                        owner << " post-selects the qubit " << qubit << " it does not own");
+    for (const auto& valid : m_engine->GetValidQubits())
+    {
+        ApplyMemoryNoise(valid);
+    }
+    return m_engine->PostSelect(owner, qubit, outcome);
+}
+
+QuantumTensorData
+QuantumPhyEntity::PeekDensityMatrix(const std::string& owner,
+                                    const std::vector<std::string>& qubits)
+{
+    NS_LOG_FUNCTION(this << owner << qubits.size());
+    NS_ABORT_MSG_UNLESS(CheckOwned(owner, qubits), owner << " peeks at a qubit it does not own");
+    return m_engine->PeekDensityMatrix(owner, qubits);
+}
 
 void
-QuantumPhyEntity::Evaluate ()
+QuantumPhyEntity::PartialTrace(const std::vector<std::string>& qubits)
 {
-  m_qnetsim.Evaluate (nullptr);
+    NS_LOG_FUNCTION(this << qubits.size());
+    for (const auto& qubit : qubits)
+    {
+        ApplyMemoryNoise(qubit);
+    }
+    m_engine->PartialTrace(qubits);
+}
+
+QuantumTensorData
+QuantumPhyEntity::Contract(const std::string& optimizer)
+{
+    NS_LOG_FUNCTION(this << optimizer);
+    return m_engine->Contract(optimizer);
+}
+
+double
+QuantumPhyEntity::CalculateFidelity(const std::pair<std::string, std::string>& epr)
+{
+    NS_LOG_FUNCTION(this << epr.first << epr.second);
+    return m_engine->CalculateFidelity(epr);
+}
+
+void
+QuantumPhyEntity::Checkpoint()
+{
+    NS_LOG_FUNCTION(this);
+    m_engine->Checkpoint();
+}
+
+std::string
+QuantumPhyEntity::AllocAncillaQubit()
+{
+    return QNS_ANCILLA_PREFIX + std::to_string(m_ancillaCount++);
+}
+
+void
+QuantumPhyEntity::SetErrorModel(Ptr<QuantumErrorModel> model, const std::string& qubit)
+{
+    NS_LOG_FUNCTION(this << model << qubit);
+    NS_LOG_LOGIC("The qubit " << qubit << " gets the " << model->GetDescription());
+    m_qubitModel[qubit] = model;
+}
+
+void
+QuantumPhyEntity::SetTimeModel(const std::string& owner, Time coherenceTime)
+{
+    NS_LOG_FUNCTION(this << owner << coherenceTime);
+    m_ownerModel[owner] =
+        CreateObjectWithAttributes<TimeModel>("CoherenceTime", TimeValue(coherenceTime));
+}
+
+void
+QuantumPhyEntity::SetDephaseModel(const std::string& owner,
+                                  const std::string& gate,
+                                  Time coherenceTime)
+{
+    NS_LOG_FUNCTION(this << owner << gate << coherenceTime);
+    m_gateModel[{owner, gate}] =
+        CreateObjectWithAttributes<DephaseModel>("CoherenceTime", TimeValue(coherenceTime));
+}
+
+void
+QuantumPhyEntity::SetDepolarModel(Ptr<QuantumChannel> channel, double fidelity)
+{
+    NS_LOG_FUNCTION(this << channel << fidelity);
+    m_channelModel[channel->GetOwners()] =
+        CreateObjectWithAttributes<DepolarModel>("Fidelity", DoubleValue(fidelity));
+}
+
+void
+QuantumPhyEntity::ApplyMemoryNoise(const std::string& qubit)
+{
+    auto timeIt = m_qubitTime.find(qubit);
+    NS_ABORT_MSG_IF(timeIt == m_qubitTime.end(), "The qubit " << qubit << " does not exist");
+    const Time elapsed = Simulator::Now() - timeIt->second;
+    if (!elapsed.IsStrictlyPositive())
+    {
+        return;
+    }
+    Ptr<QuantumErrorModel> model = m_qubitModel.at(qubit);
+    NS_LOG_LOGIC("The qubit " << qubit << " waited " << elapsed.As(Time::S) << " under the "
+                              << model->GetDescription());
+    ApplyOperation(model->GetOperation(elapsed), {qubit});
+}
+
+void
+QuantumPhyEntity::ApplyGateNoise(const std::string& owner,
+                                 const std::string& gate,
+                                 const std::vector<std::string>& qubits)
+{
+    auto it = m_gateModel.find({owner, gate});
+    Ptr<QuantumErrorModel> model = it == m_gateModel.end() ? m_defaultDephaseModel : it->second;
+    for (const auto& qubit : qubits)
+    {
+        NS_LOG_LOGIC("The gate " << gate << " of " << owner << " leaves the qubit " << qubit
+                                 << " with the " << model->GetDescription());
+        ApplyOperation(model->GetOperation(Time(0)), {qubit});
+    }
+}
+
+void
+QuantumPhyEntity::ApplyChannelNoise(Ptr<QuantumChannel> channel, const std::string& qubit)
+{
+    NS_LOG_FUNCTION(this << channel << qubit);
+    auto it = m_channelModel.find(channel->GetOwners());
+    Ptr<QuantumErrorModel> model = it == m_channelModel.end() ? m_defaultDepolarModel : it->second;
+    NS_LOG_LOGIC("The qubit " << qubit << " crossed the channel from " << channel->GetSrcOwner()
+                              << " to " << channel->GetDstOwner() << " with the "
+                              << model->GetDescription());
+    ApplyOperation(model->GetOperation(Time(0)), {qubit});
 }
 
 bool
-QuantumPhyEntity::CheckValid (const std::vector<std::string> &qubits) const
+QuantumPhyEntity::CheckValid(const std::vector<std::string>& qubits) const
 {
-  return m_qnetsim.CheckValid (qubits);
+    return m_engine->AreValid(qubits);
 }
 
 bool
-QuantumPhyEntity::CheckOwned (const std::string &owner,
-                              const std::vector<std::string> &qubits) const
+QuantumPhyEntity::CheckOwned(const std::string& owner, const std::vector<std::string>& qubits) const
 {
-  if (owner == "God") // God
+    if (owner == QNS_GOD_OWNER)
     {
-      return true;
+        return true;
     }
-
-  Ptr<QuantumNode> pnode = m_owner2pnode.at (owner);
-
-  for (const std::string &qubit : qubits) // check if owned
-    {
-      if (!pnode->OwnQubit (qubit))
-        {
-          NS_LOG_LOGIC ("At time " << Simulator::Now () << " " << owner << " skips on qubit named "
-                        << qubit << " owned by others, if not about to generate it.");
-          return false;
-        }
-    }
-
-  return true;
+    Ptr<QuantumMemory> memory = GetMemory(owner);
+    return std::all_of(qubits.begin(), qubits.end(), [&memory](const std::string& qubit) {
+        return memory->HasQubit(qubit);
+    });
 }
 
 void
-QuantumPhyEntity::AddConn2Apps (Ptr<QuantumChannel> qconn, const std::string &protocol,
-                                const std::pair<Ptr<Application>, Ptr<Application>> &apps)
+QuantumPhyEntity::AddConn2Apps(Ptr<QuantumChannel> channel,
+                               const std::string& protocol,
+                               const std::pair<Ptr<Application>, Ptr<Application>>& apps)
 {
-  m_conn2apps[*qconn][protocol] = apps;
+    NS_LOG_FUNCTION(this << channel << protocol);
+    m_apps[{channel->GetOwners(), protocol}] = apps;
+}
+
+bool
+QuantumPhyEntity::HasConn2Apps(Ptr<QuantumChannel> channel, const std::string& protocol) const
+{
+    return m_apps.count({channel->GetOwners(), protocol}) > 0;
 }
 
 std::pair<Ptr<Application>, Ptr<Application>>
-QuantumPhyEntity::GetConn2Apps (Ptr<QuantumChannel> qconn, const std::string &protocol)
+QuantumPhyEntity::GetConn2Apps(Ptr<QuantumChannel> channel, const std::string& protocol) const
 {
-  NS_LOG_LOGIC ("Getting " << protocol << " apps for " << qconn->GetSrcOwner () << " <--> "
-                           << qconn->GetDstOwner ());
-  return m_conn2apps[*qconn][protocol];
+    auto it = m_apps.find({channel->GetOwners(), protocol});
+    NS_ABORT_MSG_IF(it == m_apps.end(),
+                    "No " << protocol << " applications are installed from "
+                          << channel->GetSrcOwner() << " to " << channel->GetDstOwner()
+                          << "; see QuantumNetStackHelper::Connect()");
+    return it->second;
 }
 
-void
-QuantumPhyEntity::SetOwnerAddress (const std::string &owner, const Address &address)
+int64_t
+QuantumPhyEntity::AssignStreams(int64_t stream)
 {
-  m_owner2pnode[owner]->SetAddress (address);
-}
-
-void
-QuantumPhyEntity::SetOwnerRank (const std::string &owner, const unsigned &rank)
-{
-  m_owner2pnode[owner]->SetRank (rank);
-}
-
-
-void
-QuantumPhyEntity::Checkpoint ()
-{
-  m_qnetsim.Checkpoint ();
-}
-
-
-/* debug */
-
-void
-QuantumPhyEntity::PrintConn2Apps () const
-{
-  NS_LOG_LOGIC ("-- m_conn2apps --");
-  for (const auto &[conn, apps] : m_conn2apps)
-    {
-      NS_LOG_LOGIC ("  " << conn.GetSrcOwner () << " <--> " << conn.GetDstOwner ());
-      for (const auto &[name, app_pair] : apps)
-        {
-          NS_LOG_LOGIC (name << ": " << app_pair.first->GetTypeId ().GetName () << ", "
-                             << app_pair.second->GetTypeId ().GetName ());
-        }
-    }
+    NS_LOG_FUNCTION(this << stream);
+    m_random->SetStream(stream);
+    return 1;
 }
 
 } // namespace ns3

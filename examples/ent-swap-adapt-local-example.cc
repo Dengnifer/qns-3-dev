@@ -1,153 +1,122 @@
-/* 
-  To run this example:
-  NS_LOG="QuantumNetworkSimulator=info:QuantumPhyEntity=info|logic" ./ns3 run ent-swap-adapt-local-example
-*/
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
-#include "ns3/csma-module.h" // class CsmaHelper, NetDeviceContainer
-#include "ns3/internet-module.h" // class InternetStackHelper, Ipv6AddressHelper, Ipv6InterfaceContainer
-
-#include "ns3/quantum-basis.h"
-#include "ns3/quantum-network-simulator.h" // class QuantumNetworkSimulator
-#include "ns3/quantum-phy-entity.h" // class QuantumPhyEntity
-#include "ns3/quantum-node.h" // class QuantumNode
-#include "ns3/quantum-memory.h" // class QuantumMemory
-#include "ns3/quantum-channel.h" // class QuantumChannel
-#include "ns3/distribute-epr-helper.h" // class DistributeEPRSrcHelper, DistributeEPRDstHelper
-#include "ns3/distribute-epr-protocol.h" // class DistributeEPRSrcProtocol
-#include "ns3/quantum-net-stack-helper.h" // class QuantumNetStackHelper
-#include "ns3/ent-swap-adapt-local-helper.h" // class EntSwapAdaptLocalLocalHelper
-#include "ns3/ent-swap-adapt-local-app.h" // class EntSwapAdaptLocalLocalApp
+#include "ns3/core-module.h"
+#include "ns3/csma-module.h"
+#include "ns3/internet-module.h"
+#include "ns3/quantum-module.h"
 
 #include <iostream>
-#include <cmath>
-#include <complex>
+#include <string>
+#include <vector>
 
-NS_LOG_COMPONENT_DEFINE ("EntSwapAdaptLocalExample");
+/**
+ * @file
+ * @ingroup quantum
+ * Swap entanglement along a long chain of nodes, exactly.
+ *
+ * EntSwapAdaptLocalApp hands the correction flags from node to node, so the
+ * tensor network of the simulation is itself a chain and stays cheap to
+ * contract. Try --nNodes=1024.
+ */
 
 using namespace ns3;
 
+NS_LOG_COMPONENT_DEFINE("EntSwapAdaptLocalExample");
 
-/* 
-  With proper control flow adaptation,
-  the time cost of contraction scales linearly with N, the number of owners:
-*/
+/// Set once the protocol has finished and its results have been printed.
+static bool g_finished = false;
 
-#define N (8)
-/*
-Evaluating tensor network of size 71 in 2.44344 secs
-*/
-// #define N (16)
-/*
-Evaluating tensor network of size 159 in 5.48751 secs
-*/
-// #define N (32)
-/*
-Evaluating tensor network of size 335 in 11.2599 secs
-*/
-#define N (64)
-/*
-Evaluating tensor network of size 687 in 23.3415 secs
-*/
-// #define N (128)
-/*
-Evaluating tensor network of size 1391 in 39.0065 secs
-*/
-// #define N (1024)
-/*
-Evaluating tensor network of size 11247 in 333.711 secs
-*/
-
-int
-main ()
+/**
+ * Print the fidelity of the final pair. Sink of the Finished trace source.
+ *
+ * @param qphyent The quantum physical entity.
+ * @param pair Names of the qubits of the first and of the last node.
+ * @param app The application that finished.
+ */
+static void
+ReportFidelity(Ptr<QuantumPhyEntity> qphyent,
+               const std::pair<std::string, std::string>& pair,
+               Ptr<const QuantumApplication> app)
 {
-  //
-  // Create a quantum physical entity with N nodes.
-  //
-  std::vector<std::string> owners = {"God"};
-  for (int i = 0; i < N; ++i)
-    {
-      owners.push_back ("Owner" + std::to_string (i));
-    }
-  Ptr<QuantumPhyEntity> qphyent = CreateObject<QuantumPhyEntity> (owners);
-
-  NodeContainer nodes;
-  for (int i = 0; i < owners.size (); ++i)
-    {
-      Ptr<QuantumNode> node = qphyent->GetNode (owners[i]);
-      nodes.Add (node);
-    }
-
-  // set the PX and PZ gate error of Owner N - 1 
-  Ptr<QuantumNode> last_node = qphyent->GetNode ("Owner" + std::to_string (N - 1));
-  last_node->SetDephaseModel (QNS_GATE_PREFIX + "PX", 1.2);
-  last_node->SetDephaseModel (QNS_GATE_PREFIX + "PZ", 1.2);
-
-  //
-  // Create a classical connection.
-  //
-  CsmaHelper csmaHelper;
-  csmaHelper.SetChannelAttribute ("DataRate", DataRateValue (DataRate ("1000kbps")));
-  csmaHelper.SetChannelAttribute ("Delay",
-                                  TimeValue (MilliSeconds (CLASSICAL_DELAY)));
-  NetDeviceContainer devices = csmaHelper.Install (nodes); 
-
-  InternetStackHelper stack;
-  stack.Install (nodes);
-  Ipv6AddressHelper address;
-  address.SetBase ("2001:1::", Ipv6Prefix (64));
-  Ipv6InterfaceContainer interfaces = address.Assign (devices); 
-
-  unsigned rank = 0;
-  for (const std::string &owner : owners)
-    {
-      qphyent->SetOwnerAddress (owner, interfaces.GetAddress (rank, 1));
-      qphyent->SetOwnerRank (owner, rank);
-      ++rank;
-    }
-
-  //
-  // Install the quantum network stack.
-  //
-  QuantumNetStackHelper qstack;
-  qstack.Install (nodes);
-
-  //
-  // Install the quantum applications.
-  //
-  std::vector<std::string> former_qubits_vec = {""};
-  std::vector<std::string> latter_qubits_vec = {"Owner0_Qubit1"};
-  for (int rank = 1; rank < N - 1; ++rank) {
-    former_qubits_vec.push_back ("Owner" + std::to_string (rank) + "_Qubit0");
-    latter_qubits_vec.push_back ("Owner" + std::to_string (rank) + "_Qubit1");
-  }
-  former_qubits_vec.push_back ("Owner" + std::to_string (N - 1) + "_Qubit0");
-  latter_qubits_vec.push_back ("");
-
-  Ptr<QuantumMemory> former_qubits = CreateObject<QuantumMemory> (former_qubits_vec);
-  Ptr<QuantumMemory> latter_qubits = CreateObject<QuantumMemory> (latter_qubits_vec);
-
-  std::string lastOwner = "Owner" + std::to_string (N - 1);
-  EntSwapAdaptLocalHelper dstHelper (qphyent);
-  dstHelper.SetAttribute ("QubitsFormer", PointerValue (former_qubits));
-  dstHelper.SetAttribute ("QubitsLatter", PointerValue (latter_qubits));
-
-  ApplicationContainer dstApps = dstHelper.Install (qphyent->GetNode (lastOwner));
-  Ptr<EntSwapAdaptLocalApp> dstApp = dstApps.Get (0)->GetObject<EntSwapAdaptLocalApp> ();
-
-  dstApp->SetStartTime (Seconds (SETUP_DELAY + N * DIST_EPR_DELAY));
-  dstApp->SetStopTime (Seconds (SETUP_DELAY + (N + 1) * DIST_EPR_DELAY));
-
-  //
-  // Run the simulation.
-  //
-  Simulator::Stop (Seconds (SETUP_DELAY + (N + 1) * DIST_EPR_DELAY));
-  auto start = std::chrono::high_resolution_clock::now ();
-  Simulator::Run ();
-  auto end = std::chrono::high_resolution_clock::now ();
-  printf ("Total time cost: %ld s\n",
-          std::chrono::duration_cast<std::chrono::seconds> (end - start).count ());
-  Simulator::Destroy ();
-
-  return 0;
+    std::cout << "Fidelity of the pair shared by the first and the last node: "
+              << qphyent->CalculateFidelity(pair) << std::endl;
+    g_finished = true;
 }
 
+int
+main(int argc, char* argv[])
+{
+    uint32_t nNodes = 64;
+    double fidelity = 0.95;
+    Time correctionCoherenceTime = Seconds(1.2);
+
+    CommandLine cmd(__FILE__);
+    cmd.AddValue("nNodes", "Number of nodes of the chain", nNodes);
+    cmd.AddValue("fidelity", "Fidelity of each distributed Bell pair", fidelity);
+    cmd.AddValue("correctionCoherenceTime",
+                 "Coherence time of the correction gates of the last node",
+                 correctionCoherenceTime);
+    cmd.Parse(argc, argv);
+    NS_ABORT_MSG_IF(nNodes < 3, "The chain needs at least 3 nodes");
+
+    // The classical network: all nodes on one CSMA segment, with IPv6.
+    NodeContainer nodes;
+    nodes.Create(nNodes);
+    CsmaHelper csma;
+    csma.SetChannelAttribute("DataRate", DataRateValue(DataRate("1000kbps")));
+    csma.SetChannelAttribute("Delay", TimeValue(MicroSeconds(100)));
+    NetDeviceContainer devices = csma.Install(nodes);
+    InternetStackHelper internet;
+    internet.Install(nodes);
+    Ipv6AddressHelper addresses;
+    addresses.SetBase("2001:1::", Ipv6Prefix(64));
+    addresses.Assign(devices);
+
+    // The quantum network on top of it.
+    std::vector<std::string> owners;
+    owners.reserve(nNodes);
+    for (uint32_t i = 0; i < nNodes; ++i)
+    {
+        owners.push_back("Owner" + std::to_string(i));
+    }
+    QuantumNetStackHelper stack;
+    Ptr<QuantumPhyEntity> qphyent =
+        stack.Install(nodes, owners, QuantumNetStackHelper::Connectivity::NONE);
+
+    // The last node applies the corrections with noisy gates.
+    Ptr<QuantumNode> lastNode = qphyent->GetQuantumNode(owners.back());
+    lastNode->SetDephaseModel(QNS_GATE_PX, correctionCoherenceTime);
+    lastNode->SetDephaseModel(QNS_GATE_PZ, correctionCoherenceTime);
+
+    // Name the qubits: node i shares "former" with node i - 1 and "latter" with node i + 1.
+    std::vector<std::string> former;
+    std::vector<std::string> latter;
+    for (uint32_t i = 0; i < nNodes; ++i)
+    {
+        former.push_back(i == 0 ? "" : owners[i] + "_Former");
+        latter.push_back(i + 1 == nNodes ? "" : owners[i] + "_Latter");
+    }
+
+    EntSwapAdaptLocalHelper helper(qphyent);
+    helper.SetAttribute("QubitsFormer", PointerValue(CreateObject<QuantumMemory>(former)));
+    helper.SetAttribute("QubitsLatter", PointerValue(CreateObject<QuantumMemory>(latter)));
+    helper.SetAttribute("EprFidelity", DoubleValue(fidelity));
+    ApplicationContainer apps = helper.Install(lastNode);
+    // What to report, and when: the fidelity of the final pair, once the chain is done.
+    apps.Get(0)->TraceConnectWithoutContext(
+        "Finished",
+        MakeBoundCallback(&ReportFidelity,
+                          qphyent,
+                          std::pair<std::string, std::string>{latter.front(), former.back()}));
+
+    Simulator::Stop(Seconds(1));
+    Simulator::Run();
+    NS_ABORT_MSG_UNLESS(g_finished, "The protocol did not finish before the simulation stopped");
+
+    Simulator::Destroy();
+    return 0;
+}

@@ -1,145 +1,154 @@
-#include "ns3/telep-adapt-app.h"
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
-#include "ns3/quantum-basis.h"
-#include "ns3/quantum-phy-entity.h" // class QuantumPhyEntity
-#include "ns3/quantum-node.h" // class QuantumNode
-#include "ns3/quantum-channel.h" // class QuantumChannel
-#include "ns3/distribute-epr-protocol.h"
+#include "telep-adapt-app.h"
 
-namespace ns3 {
-NS_LOG_COMPONENT_DEFINE ("TelepAdaptApp");
+#include "distribute-epr-protocol.h"
+#include "quantum-channel.h"
+#include "quantum-phy-entity.h"
+#include "qubit.h"
 
-NS_OBJECT_ENSURE_REGISTERED (TelepAdaptApp);
+#include "ns3/log.h"
+#include "ns3/pair.h"
+#include "ns3/pointer.h"
+#include "ns3/simulator.h"
+#include "ns3/string.h"
 
-TelepAdaptApp::TelepAdaptApp (Ptr<QuantumPhyEntity> qphyent_, Ptr<QuantumChannel> conn_,
-                              const std::string& last_owner_,
-                              const std::pair<std::string, std::string> &qubits_)
-    : m_qphyent (qphyent_), m_conn (conn_), m_last_owner (last_owner_), m_qubits (qubits_)
+namespace ns3
 {
-}
 
-TelepAdaptApp::~TelepAdaptApp ()
-{
-}
+NS_LOG_COMPONENT_DEFINE("TelepAdaptApp");
 
-TelepAdaptApp::TelepAdaptApp (
-) : m_qphyent (nullptr), m_conn (nullptr),
-    m_last_owner (""),
-    m_qubits ({"", ""})
-{
-}
+NS_OBJECT_ENSURE_REGISTERED(TelepAdaptApp);
 
 TypeId
-TelepAdaptApp::GetTypeId ()
+TelepAdaptApp::GetTypeId()
 {
-  static TypeId tid =
-      TypeId ("ns3::TelepAdaptApp")
-          .AddConstructor<TelepAdaptApp> ()
-          .SetParent<Application> ()
-          .AddAttribute ("QPhyEntity", "The pointer to the quantum physical entity", PointerValue (),
-                         MakePointerAccessor (&TelepAdaptApp::m_qphyent),
-                         MakePointerChecker<QuantumPhyEntity> ())
-          .AddAttribute ("QChannel", "The connection between Alice and Bob", PointerValue (),
-                         MakePointerAccessor (&TelepAdaptApp::m_conn),
-                         MakePointerChecker<QuantumChannel> ())
-          .AddAttribute ("LastOwner", "The last owner of the qubit", StringValue (),
-                          MakeStringAccessor (&TelepAdaptApp::m_last_owner),
-                          MakeStringChecker ())
-          .AddAttribute ("Qubits", "The two qubits of Alice",
-                         PairValue<StringValue, StringValue> (),
-                         MakePairAccessor<StringValue, StringValue> (&TelepAdaptApp::m_qubits),
-                         MakePairChecker<StringValue, StringValue> ())
-          .AddAttribute ("Qubit", "The qubit of Bob", StringValue (),
-                         MakeStringAccessor (&TelepAdaptApp::m_qubit), MakeStringChecker ())
-          .AddAttribute ("Input", "The pointer to the state Alice wants to teleport to Bob",
-                         PointerValue (), MakePointerAccessor (&TelepAdaptApp::m_input),
-                         MakePointerChecker<Qubit> ());
-  return tid;
+    static TypeId tid =
+        TypeId("ns3::TelepAdaptApp")
+            .SetParent<QuantumApplication>()
+            .SetGroupName("Quantum")
+            .AddConstructor<TelepAdaptApp>()
+            .AddAttribute("QChannel",
+                          "The quantum channel from Alice to Bob.",
+                          PointerValue(),
+                          MakePointerAccessor(&TelepAdaptApp::m_channel),
+                          MakePointerChecker<QuantumChannel>())
+            .AddAttribute("LastOwner",
+                          "Owner at the end of the teleportation chain; the application "
+                          "contracts the tensor network if this is Bob.",
+                          StringValue(),
+                          MakeStringAccessor(&TelepAdaptApp::m_lastOwner),
+                          MakeStringChecker())
+            .AddAttribute("Qubits",
+                          "Alice's qubit to teleport and her half of the Bell pair.",
+                          PairValue<StringValue, StringValue>(),
+                          MakePairAccessor<StringValue, StringValue>(&TelepAdaptApp::m_qubits),
+                          MakePairChecker<StringValue, StringValue>())
+            .AddAttribute("Qubit",
+                          "Bob's half of the Bell pair.",
+                          StringValue(),
+                          MakeStringAccessor(&TelepAdaptApp::m_qubit),
+                          MakeStringChecker())
+            .AddAttribute("Input",
+                          "State to prepare Alice's qubit in; leave unset if the qubit exists.",
+                          PointerValue(),
+                          MakePointerAccessor(&TelepAdaptApp::m_input),
+                          MakePointerChecker<Qubit>())
+            .AddAttribute("LocalOperationDelay",
+                          "Wait between sharing the Bell pair and the local operations; it "
+                          "must cover the distribution of the pair.",
+                          TimeValue(MilliSeconds(100)),
+                          MakeTimeAccessor(&TelepAdaptApp::m_delay),
+                          MakeTimeChecker(Time(0)));
+    return tid;
 }
 
 void
-TelepAdaptApp::Teleport ()
+TelepAdaptApp::DoDispose()
 {
-  NS_LOG_LOGIC ("Teleport at time " << Simulator::Now ());
+    NS_LOG_FUNCTION(this);
+    m_channel = nullptr;
+    m_input = nullptr;
+    QuantumApplication::DoDispose();
+}
 
-  // generate psi
-  if (m_input)
+void
+TelepAdaptApp::DoStartApplication()
+{
+    NS_LOG_FUNCTION(this);
+    Ptr<QuantumPhyEntity> qphyent = GetQuantumPhyEntity();
+    const std::string srcOwner = m_channel->GetSrcOwner();
+    const std::string dstOwner = m_channel->GetDstOwner();
+
+    if (m_input)
     {
-      Simulator::ScheduleNow (&QuantumPhyEntity::GenerateQubitsPure, m_qphyent,
-                              m_conn->GetSrcOwner (), m_input->GetStateVector (),
-                              std::vector<std::string>{m_qubits.first});
+        Simulator::ScheduleNow(&QuantumPhyEntity::GenerateQubitsPure,
+                               qphyent,
+                               srcOwner,
+                               m_input->GetStateVector(),
+                               std::vector<std::string>{m_qubits.first});
     }
-  std::vector<std::complex<double>> input;
-  // generate and distribute EPR
-  Ptr<DistributeEPRSrcProtocol> dist_epr_src_app =
-      m_qphyent->GetConn2Apps (m_conn, APP_DIST_EPR).first->GetObject<DistributeEPRSrcProtocol> ();
-  Simulator::ScheduleNow (&DistributeEPRSrcProtocol::GenerateAndDistributeEPR,
-                          dist_epr_src_app,
-                          std::pair<std::string, std::string>{m_qubits.second, m_qubit});
 
-  // Alice applies local operations
-  Simulator::Schedule (Seconds (0.1),
-                       &QuantumPhyEntity::ApplyGate, m_qphyent, m_conn->GetSrcOwner (),
-                       QNS_GATE_PREFIX + "CNOT", std::vector<std::complex<double>>{},
-                       std::vector<std::string>{m_qubits.second, m_qubits.first});
-  Simulator::Schedule (Seconds (0.1),
-                       &QuantumPhyEntity::ApplyGate, m_qphyent, m_conn->GetSrcOwner (),
-                       QNS_GATE_PREFIX + "H", std::vector<std::complex<double>>{},
-                       std::vector<std::string>{m_qubits.first});
+    auto distributor = DynamicCast<DistributeEprSrcProtocol>(
+        qphyent->GetConn2Apps(m_channel, QNS_APP_DIST_EPR).first);
+    Simulator::ScheduleNow(&DistributeEprSrcProtocol::GenerateAndDistributeEpr,
+                           distributor,
+                           std::pair<std::string, std::string>{m_qubits.second, m_qubit});
 
+    // Rotate Alice's two qubits into the Bell basis.
+    Simulator::Schedule(m_delay,
+                        &QuantumPhyEntity::ApplyGate,
+                        qphyent,
+                        srcOwner,
+                        QNS_GATE_CNOT,
+                        QuantumTensorData{},
+                        std::vector<std::string>{m_qubits.second, m_qubits.first});
+    Simulator::Schedule(m_delay,
+                        &QuantumPhyEntity::ApplyGate,
+                        qphyent,
+                        srcOwner,
+                        QNS_GATE_H,
+                        QuantumTensorData{},
+                        std::vector<std::string>{m_qubits.first});
 
-  // God apply control operations
-  Simulator::Schedule (
-      Seconds (0.1), &QuantumPhyEntity::ApplyControlledOperation,
-      m_qphyent, m_conn->GetDstOwner (), QNS_GATE_PREFIX + "X", QNS_GATE_PREFIX + "CX", cnot,
-      std::vector<std::string>{m_qubits.second}, std::vector<std::string>{m_qubit});
-  // the latter qubit of this owner is not used anymore
-  
-  Simulator::Schedule (Seconds (0.1), &QuantumPhyEntity::PartialTrace,
-                       m_qphyent, std::vector<std::string>{m_qubits.second});
+    // Bob's corrections, controlled by Alice's qubits instead of her outcomes.
+    Simulator::Schedule(m_delay,
+                        &QuantumPhyEntity::ApplyControlledOperation,
+                        qphyent,
+                        dstOwner,
+                        QNS_GATE_PX,
+                        QNS_GATE_CNOT,
+                        QuantumTensorData{},
+                        std::vector<std::string>{m_qubits.second},
+                        std::vector<std::string>{m_qubit});
+    Simulator::Schedule(m_delay,
+                        &QuantumPhyEntity::PartialTrace,
+                        qphyent,
+                        std::vector<std::string>{m_qubits.second});
+    Simulator::Schedule(m_delay,
+                        &QuantumPhyEntity::ApplyControlledOperation,
+                        qphyent,
+                        dstOwner,
+                        QNS_GATE_PZ,
+                        QNS_GATE_CZ,
+                        QuantumTensorData{},
+                        std::vector<std::string>{m_qubits.first},
+                        std::vector<std::string>{m_qubit});
+    Simulator::Schedule(m_delay,
+                        &QuantumPhyEntity::PartialTrace,
+                        qphyent,
+                        std::vector<std::string>{m_qubits.first});
 
-  Simulator::Schedule (Seconds (0.1),
-                       &QuantumPhyEntity::ApplyControlledOperation, m_qphyent,
-                       m_conn->GetDstOwner (), QNS_GATE_PREFIX + "Z", QNS_GATE_PREFIX + "CZ",
-                       std::vector<std::complex<double>>{},
-                       std::vector<std::string>{m_qubits.first}, std::vector<std::string>{m_qubit});
-  // the former qubit of this owner is not used anymore
-  Simulator::Schedule (Seconds (0.1), &QuantumPhyEntity::PartialTrace,
-                       m_qphyent, std::vector<std::string>{m_qubits.first});
-
-  if (m_last_owner == m_conn->GetDstOwner ())
+    if (m_lastOwner == dstOwner)
     {
-    Simulator::Schedule (Seconds (0.1), &QuantumPhyEntity::Contract,
-                         m_qphyent, "ascend");
-    std::vector<std::complex<double>> unused;
-    Simulator::Schedule (Seconds (0.1), &QuantumPhyEntity::PeekDM,
-                         m_qphyent, m_last_owner, std::vector<std::string>{m_qubit}, unused);
+        // Collapse the network so that reading the result is cheap.
+        Simulator::Schedule(m_delay, &QuantumPhyEntity::Contract, qphyent, std::string("ascend"));
     }
-}
-
-void
-TelepAdaptApp::SetQubits (const std::pair<std::string, std::string> &qubits_)
-{
-  NS_LOG_LOGIC ("Setting qubits " << qubits_.first << " " << qubits_.second);
-  m_qubits = qubits_;
-}
-
-void
-TelepAdaptApp::SetQubit (const std::string &qubit_)
-{
-  m_qubit = qubit_;
-}
-
-void
-TelepAdaptApp::SetInput (Ptr<Qubit> input_)
-{
-  m_input = input_;
-}
-
-void
-TelepAdaptApp::StartApplication ()
-{
-  Teleport ();
+    Simulator::Schedule(m_delay, &TelepAdaptApp::NotifyFinished, this);
 }
 
 } // namespace ns3

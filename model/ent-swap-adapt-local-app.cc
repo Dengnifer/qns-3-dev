@@ -1,166 +1,157 @@
-#include "ns3/ent-swap-adapt-local-app.h"
+/*
+ * Copyright (c) 2024 The qns-3 authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
 
-#include "ns3/quantum-basis.h"
-#include "ns3/quantum-network-simulator.h" // class QuantumNetworkSimulator
-#include "ns3/quantum-phy-entity.h" // class QuantumPhyEntity
-#include "ns3/quantum-node.h" // class QuantumNode
-#include "ns3/quantum-memory.h" // class QuantumMemory
+#include "ent-swap-adapt-local-app.h"
 
-namespace ns3 {
+#include "quantum-memory.h"
+#include "quantum-phy-entity.h"
 
-NS_LOG_COMPONENT_DEFINE ("EntSwapAdaptLocalApp");
+#include "ns3/abort.h"
+#include "ns3/double.h"
+#include "ns3/log.h"
+#include "ns3/pointer.h"
+#include "ns3/simulator.h"
 
-NS_OBJECT_ENSURE_REGISTERED (EntSwapAdaptLocalApp);
-
-EntSwapAdaptLocalApp::EntSwapAdaptLocalApp (Ptr<QuantumPhyEntity> qphyent_,
-                                  Ptr<QuantumMemory> qubits_former_,
-                                  Ptr<QuantumMemory> qubits_latter_)
-    : m_qphyent (qphyent_),
-      m_qubits_former (qubits_former_),
-      m_qubits_latter (qubits_latter_)
+namespace ns3
 {
-}
 
-EntSwapAdaptLocalApp::~EntSwapAdaptLocalApp ()
-{
-}
+NS_LOG_COMPONENT_DEFINE("EntSwapAdaptLocalApp");
 
-EntSwapAdaptLocalApp::EntSwapAdaptLocalApp ()
-    : m_qphyent (nullptr), m_qubits_former (nullptr), m_qubits_latter (nullptr)
-{
-}
+NS_OBJECT_ENSURE_REGISTERED(EntSwapAdaptLocalApp);
 
 TypeId
-EntSwapAdaptLocalApp::GetTypeId ()
+EntSwapAdaptLocalApp::GetTypeId()
 {
-  static TypeId tid =
-      TypeId ("ns3::EntSwapAdaptLocalApp")
-          .AddConstructor<EntSwapAdaptLocalApp> ()
-          .SetParent<Application> ()
-          .AddAttribute ("QPhyEntity", "The pointer to the quantum physical entity", PointerValue (),
-                         MakePointerAccessor (&EntSwapAdaptLocalApp::m_qphyent),
-                         MakePointerChecker<QuantumPhyEntity> ())
-          .AddAttribute ("QubitsFormer", "The pointer to the former qubits of each owner",
-                         PointerValue (),
-                         MakePointerAccessor (&EntSwapAdaptLocalApp::m_qubits_former),
-                         MakePointerChecker<QuantumMemory> ())
-          .AddAttribute ("QubitsLatter", "The pointer to the latter qubits of each owner",
-                         PointerValue (),
-                         MakePointerAccessor (&EntSwapAdaptLocalApp::m_qubits_latter),
-                         MakePointerChecker<QuantumMemory> ())
-          ;
-  return tid;
+    static TypeId tid =
+        TypeId("ns3::EntSwapAdaptLocalApp")
+            .SetParent<QuantumApplication>()
+            .SetGroupName("Quantum")
+            .AddConstructor<EntSwapAdaptLocalApp>()
+            .AddAttribute("QubitsFormer",
+                          "Per node, the qubit entangled with the previous node.",
+                          PointerValue(),
+                          MakePointerAccessor(&EntSwapAdaptLocalApp::m_qubitsFormer),
+                          MakePointerChecker<QuantumMemory>())
+            .AddAttribute("QubitsLatter",
+                          "Per node, the qubit entangled with the next node.",
+                          PointerValue(),
+                          MakePointerAccessor(&EntSwapAdaptLocalApp::m_qubitsLatter),
+                          MakePointerChecker<QuantumMemory>())
+            .AddAttribute("EprFidelity",
+                          "Fidelity of each Bell pair of the chain.",
+                          DoubleValue(0.95),
+                          MakeDoubleAccessor(&EntSwapAdaptLocalApp::m_eprFidelity),
+                          MakeDoubleChecker<double>(0.0, 1.0));
+    return tid;
 }
 
 void
-EntSwapAdaptLocalApp::EntanglementSwapping ()
+EntSwapAdaptLocalApp::DoDispose()
 {
-  
-  unsigned owners = m_qubits_former->GetSize ();
-  
-  std::vector<std::complex<double>> epr_dm = GetEPRwithFidelity (0.95);
+    NS_LOG_FUNCTION(this);
+    m_qubitsFormer = nullptr;
+    m_qubitsLatter = nullptr;
+    QuantumApplication::DoDispose();
+}
 
-  // God generate the EPR between Owner0 and Owner1, Owner1 and Owner2
-  Simulator::ScheduleNow (&QuantumPhyEntity::GenerateQubitsMixed, m_qphyent,
-                          "God", epr_dm, 
-                          std::vector<std::string>{m_qubits_latter->GetQubit (0), m_qubits_former->GetQubit (1)});
-  Simulator::ScheduleNow (&QuantumPhyEntity::GenerateQubitsMixed, m_qphyent,
-                          "God", epr_dm, 
-                          std::vector<std::string>{m_qubits_latter->GetQubit (1), m_qubits_former->GetQubit (2)});  
-  // Owner1 apply local operations
-  Simulator::ScheduleNow (&QuantumPhyEntity::ApplyGate, m_qphyent,
-                          "God", QNS_GATE_PREFIX + "CNOT",
-                          std::vector<std::complex<double>>{},
-                          std::vector<std::string>{m_qubits_latter->GetQubit (1), m_qubits_former->GetQubit (1)});
-  Simulator::ScheduleNow (&QuantumPhyEntity::ApplyGate, m_qphyent,
-                          "God", QNS_GATE_PREFIX + "H",
-                          std::vector<std::complex<double>>{},
-                          std::vector<std::string>{m_qubits_former->GetQubit (1)});
+void
+EntSwapAdaptLocalApp::DoStartApplication()
+{
+    NS_LOG_FUNCTION(this);
+    Simulator::ScheduleNow(&EntSwapAdaptLocalApp::EntanglementSwapping, this);
+}
 
+void
+EntSwapAdaptLocalApp::EntanglementSwapping()
+{
+    NS_LOG_FUNCTION(this);
+    NS_ABORT_MSG_UNLESS(m_qubitsFormer && m_qubitsLatter &&
+                            m_qubitsFormer->GetSize() == m_qubitsLatter->GetSize() &&
+                            m_qubitsFormer->GetSize() >= 3,
+                        "QubitsFormer and QubitsLatter must name the qubits of the same nodes, "
+                        "at least three");
+    Ptr<QuantumPhyEntity> qphyent = GetQuantumPhyEntity();
+    const std::size_t nNodes = m_qubitsFormer->GetSize();
+    const QuantumTensorData pair = MakeWernerState(m_eprFidelity);
 
-  for (unsigned rank = 2; rank < owners - 1; ++rank)
+    // Share a pair between two neighbors.
+    auto generatePair = [&](std::size_t rank) {
+        Simulator::ScheduleNow(&QuantumPhyEntity::GenerateQubitsMixed,
+                               qphyent,
+                               QNS_GOD_OWNER,
+                               pair,
+                               std::vector<std::string>{m_qubitsLatter->GetQubit(rank),
+                                                        m_qubitsFormer->GetQubit(rank + 1)});
+    };
+    // Apply a noiseless gate.
+    auto applyGate = [&](const std::string& gate, const std::vector<std::string>& qubits) {
+        Simulator::ScheduleNow(&QuantumPhyEntity::ApplyGate,
+                               qphyent,
+                               QNS_GOD_OWNER,
+                               gate,
+                               QuantumTensorData{},
+                               qubits);
+    };
+    auto traceOut = [&](const std::string& qubit) {
+        Simulator::ScheduleNow(&QuantumPhyEntity::PartialTrace,
+                               qphyent,
+                               std::vector<std::string>{qubit});
+    };
+
+    generatePair(0);
+    generatePair(1);
+    // Rotate the two qubits of node 1 into the Bell basis; they are its flags.
+    applyGate(QNS_GATE_CNOT, {m_qubitsLatter->GetQubit(1), m_qubitsFormer->GetQubit(1)});
+    applyGate(QNS_GATE_H, {m_qubitsFormer->GetQubit(1)});
+
+    for (std::size_t rank = 2; rank + 1 < nNodes; ++rank)
     {
-      // God generate the EPR between owner rank and owner rank + 1
-      Simulator::ScheduleNow (&QuantumPhyEntity::GenerateQubitsMixed, m_qphyent,
-                              "God", epr_dm, 
-                              std::vector<std::string>{m_qubits_latter->GetQubit (rank), m_qubits_former->GetQubit (rank + 1)});
+        generatePair(rank);
+        const std::string former = m_qubitsFormer->GetQubit(rank);
+        const std::string latter = m_qubitsLatter->GetQubit(rank);
+        applyGate(QNS_GATE_CNOT, {latter, former});
+        applyGate(QNS_GATE_H, {former});
 
-      // owner rank apply local operations
-      std::pair<std::string, std::string> qubits = {
-        m_qubits_former->GetQubit (rank), m_qubits_latter->GetQubit (rank)};
-      NS_LOG_LOGIC ("Owner " << rank << " has qubits " << qubits.first << " " << qubits.second);
-
-      Simulator::ScheduleNow (&QuantumPhyEntity::ApplyGate, m_qphyent,
-                              "God", QNS_GATE_PREFIX + "CNOT",
-                              std::vector<std::complex<double>>{},
-                              std::vector<std::string>{qubits.second, qubits.first});
-      Simulator::ScheduleNow (&QuantumPhyEntity::ApplyGate, m_qphyent,
-                              "God", QNS_GATE_PREFIX + "H",
-                              std::vector<std::complex<double>>{},
-                              std::vector<std::string>{qubits.first});
-      
-      // God pass the xor result from owner rank - 1 to owner rank
-      std::pair<std::string, std::string> qubits_pred = {
-        m_qubits_former->GetQubit (rank - 1), m_qubits_latter->GetQubit (rank - 1)};
-      Simulator::ScheduleNow (&QuantumPhyEntity::ApplyGate, m_qphyent,
-                              "God", QNS_GATE_PREFIX + "CNOT",
-                              std::vector<std::complex<double>>{},
-                              std::vector<std::string>{qubits.second, qubits_pred.second});  
-      
-      // the latter qubit of the previous owner not used anymore
-      Simulator::ScheduleNow (&QuantumPhyEntity::PartialTrace, m_qphyent,
-                              std::vector<std::string>{qubits_pred.second});
-      
-      Simulator::ScheduleNow (&QuantumPhyEntity::ApplyGate, m_qphyent,
-                              "God", QNS_GATE_PREFIX + "CNOT",
-                              std::vector<std::complex<double>>{},
-                              std::vector<std::string>{qubits.first, qubits_pred.first});  
-      // the former qubit of the previous owner not used anymore
-      Simulator::ScheduleNow (&QuantumPhyEntity::PartialTrace, m_qphyent,
-                              std::vector<std::string>{qubits_pred.first});
-
-
+        // Fold the flags of the previous node into the flags of this node,
+        // then discard the qubits of the previous node.
+        const std::string formerPred = m_qubitsFormer->GetQubit(rank - 1);
+        const std::string latterPred = m_qubitsLatter->GetQubit(rank - 1);
+        applyGate(QNS_GATE_CNOT, {latter, latterPred});
+        traceOut(latterPred);
+        applyGate(QNS_GATE_CNOT, {former, formerPred});
+        traceOut(formerPred);
     }
 
-  // between the last two owners
-  std::string last_qubit = m_qubits_former->GetQubit (owners - 1);
+    // The corrections of the last node, controlled by the flags of the last repeater.
+    const std::string owner = GetOwner();
+    const std::string lastQubit = m_qubitsFormer->GetQubit(nNodes - 1);
+    const std::string flagX = m_qubitsLatter->GetQubit(nNodes - 2);
+    const std::string flagZ = m_qubitsFormer->GetQubit(nNodes - 2);
+    Simulator::ScheduleNow(&QuantumPhyEntity::ApplyControlledOperation,
+                           qphyent,
+                           owner,
+                           QNS_GATE_PX,
+                           QNS_GATE_CNOT,
+                           QuantumTensorData{},
+                           std::vector<std::string>{flagX},
+                           std::vector<std::string>{lastQubit});
+    traceOut(flagX);
+    Simulator::ScheduleNow(&QuantumPhyEntity::ApplyControlledOperation,
+                           qphyent,
+                           owner,
+                           QNS_GATE_PZ,
+                           QNS_GATE_CZ,
+                           QuantumTensorData{},
+                           std::vector<std::string>{flagZ},
+                           std::vector<std::string>{lastQubit});
+    traceOut(flagZ);
 
-  // God apply control operations with error equiv to that of PX / PZ gates
-  Simulator::ScheduleNow (&QuantumPhyEntity::ApplyControlledOperation, m_qphyent,
-                          GetNode ()->GetObject<QuantumNode> ()->GetOwner (), QNS_GATE_PREFIX + "PX",
-                          QNS_GATE_PREFIX + "CX", cnot,
-                          std::vector<std::string>{m_qubits_latter->GetQubit (owners - 2)},
-                          std::vector<std::string>{last_qubit});
-  // the latter qubit of the last but one owner not used anymore
-  Simulator::ScheduleNow (&QuantumPhyEntity::PartialTrace, m_qphyent,
-                          std::vector<std::string>{m_qubits_latter->GetQubit (owners - 2)});    
-
-  Simulator::ScheduleNow (&QuantumPhyEntity::ApplyControlledOperation, m_qphyent,
-                          GetNode ()->GetObject<QuantumNode> ()->GetOwner (), QNS_GATE_PREFIX + "PZ", 
-                          QNS_GATE_PREFIX + "CZ", std::vector<std::complex<double>>{},
-                          std::vector<std::string>{m_qubits_former->GetQubit (owners - 2)},
-                          std::vector<std::string>{last_qubit});
-  // the former qubit of the last but one owner not used anymore
-  Simulator::ScheduleNow (&QuantumPhyEntity::PartialTrace, m_qphyent,
-                          std::vector<std::string>{m_qubits_former->GetQubit (owners - 2)});
-
-  // contract the circuit to discard all the intermediate qubits, leaving only the final EPR state
-  Simulator::ScheduleNow (&QuantumPhyEntity::Contract, m_qphyent, "ascend");
-  // peek the density matrix of the final EPR state, which is shared by the first and the last owner
-  std::vector<std::complex<double>> unused;
-  Simulator::ScheduleNow (&QuantumPhyEntity::PeekDM, m_qphyent, "God",
-                          std::vector<std::string>{m_qubits_latter->GetQubit (0), last_qubit}, unused);
-  // calculate the fidelity of the final EPR state
-  double fidel;
-  Simulator::ScheduleNow (&QuantumPhyEntity::CalculateFidelity, m_qphyent,
-                          std::pair<std::string, std::string>{m_qubits_latter->GetQubit (0), last_qubit}, fidel); 
-            
-}
-
-void
-EntSwapAdaptLocalApp::StartApplication ()
-{
-  Simulator::ScheduleNow (&EntSwapAdaptLocalApp::EntanglementSwapping, this);
+    // Contracting in order of creation follows the chain.
+    Simulator::ScheduleNow(&QuantumPhyEntity::Contract, qphyent, std::string("ascend"));
+    Simulator::ScheduleNow(&EntSwapAdaptLocalApp::NotifyFinished, this);
 }
 
 } // namespace ns3
