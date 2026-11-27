@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: GPL-2.0-only
  */
 
+#include "ns3/address.h"
+#include "ns3/application-container.h"
 #include "ns3/distill-nested-adapt-app.h"
 #include "ns3/distill-nested-adapt-helper.h"
 #include "ns3/distill-nested-app.h"
@@ -16,6 +18,7 @@
 #include "ns3/ent-swap-adapt-local-helper.h"
 #include "ns3/ent-swap-app.h"
 #include "ns3/ent-swap-helper.h"
+#include "ns3/inet-socket-address.h"
 #include "ns3/internet-stack-helper.h"
 #include "ns3/ipv4-address-helper.h"
 #include "ns3/node-container.h"
@@ -137,12 +140,8 @@ struct TestNetwork
      *
      * @param nNodes Number of nodes.
      * @param noise Which noise the network has.
-     * @param connectivity Which nodes can distribute Bell pairs to each other.
      */
-    TestNetwork(uint32_t nNodes,
-                Noise noise,
-                QuantumNetStackHelper::Connectivity connectivity =
-                    QuantumNetStackHelper::Connectivity::CHAIN)
+    TestNetwork(uint32_t nNodes, Noise noise)
     {
         nodes.Create(nNodes);
         SimpleNetDeviceHelper deviceHelper;
@@ -182,7 +181,7 @@ struct TestNetwork
         {
             owners.push_back("Owner" + std::to_string(i));
         }
-        qphyent = stack.Install(nodes, owners, connectivity);
+        qphyent = stack.Install(nodes, owners);
         qphyent->AssignStreams(1);
     }
 
@@ -337,16 +336,24 @@ class QuantumStateTestCase : public TestCase
             TOLERANCE,
             "half of a Bell pair is maximally mixed");
 
-        // Contracting the network must not change the state.
-        qphyent->Contract("greed");
-        NS_TEST_EXPECT_MSG_EQ_TOL(qphyent->CalculateFidelity({"a", "b"}),
-                                  1.0,
-                                  TOLERANCE,
-                                  "contraction preserves the state");
-        NS_TEST_EXPECT_MSG_LT(
-            Distance(qphyent->PeekDensityMatrix(god, {"psi"}), DensityMatrix(TEST_STATE)),
-            TOLERANCE,
-            "contraction preserves the other qubits");
+        // Contracting the network must not change the state, whatever the
+        // contraction order: the order of this module, the order of creation
+        // and an order of ExaTN. Each contraction leaves one tensor, so a gate
+        // that cancels itself is applied in between to grow the network again.
+        for (const std::string optimizer : {"auto", "ascend", "greed"})
+        {
+            qphyent->ApplyGate(god, QNS_GATE_H, {}, {"psi"});
+            qphyent->ApplyGate(god, QNS_GATE_H, {}, {"psi"});
+            qphyent->Contract(optimizer);
+            NS_TEST_EXPECT_MSG_EQ_TOL(qphyent->CalculateFidelity({"a", "b"}),
+                                      1.0,
+                                      TOLERANCE,
+                                      "contraction with " << optimizer << " preserves the state");
+            NS_TEST_EXPECT_MSG_LT(
+                Distance(qphyent->PeekDensityMatrix(god, {"psi"}), DensityMatrix(TEST_STATE)),
+                TOLERANCE,
+                "contraction with " << optimizer << " preserves the other qubits");
+        }
 
         // Measuring one half of a Bell pair fixes the other half.
         const QuantumMeasurement first = qphyent->Measure(god, "a");
@@ -461,6 +468,46 @@ class QuantumNoiseTestCase : public TestCase
 
 /**
  * @ingroup quantum-tests
+ * Test that nodes without a classical network can still hold and operate on
+ * qubits.
+ */
+class QuantumOnlyNetworkTestCase : public TestCase
+{
+  public:
+    QuantumOnlyNetworkTestCase()
+        : TestCase("Quantum stack without a classical network")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        NodeContainer nodes;
+        nodes.Create(2);
+        QuantumNetStackHelper stack;
+        Ptr<QuantumPhyEntity> qphyent = stack.Install(nodes, {"Alice", "Bob"});
+        NS_TEST_EXPECT_MSG_EQ(qphyent->GetQuantumNode("Alice")->HasAddress(),
+                              false,
+                              "a node without a network stack has no address");
+
+        Simulator::Schedule(Seconds(0),
+                            [=]() { qphyent->GenerateQubitsPure("Alice", QNS_BELL, {"a", "b"}); });
+        Simulator::Schedule(Seconds(0.5),
+                            [=]() { qphyent->ApplyGate("Alice", QNS_GATE_I, {}, {"a"}); });
+        Simulator::Run();
+        // One qubit dephased for 0.5 s with the default coherence time of 1 s,
+        // followed by the default gate noise of 200 us.
+        const double coherence = std::exp(-0.5) * std::exp(-200e-6);
+        NS_TEST_EXPECT_MSG_EQ_TOL(qphyent->CalculateFidelity({"a", "b"}),
+                                  (1 + coherence) / 2,
+                                  TOLERANCE,
+                                  "local operations work without a classical network");
+        Simulator::Destroy();
+    }
+};
+
+/**
+ * @ingroup quantum-tests
  * Test teleportation: the sampled protocol, and the two exact variants
  * against it.
  */
@@ -538,8 +585,34 @@ class TeleportationTestCase : public TestCase
         return output;
     }
 
+    /**
+     * Check that the helpers turn owner names into socket addresses: the
+     * source must send to the address on which the destination receives.
+     */
+    void CheckAddresses()
+    {
+        TestNetwork network(2, TestNetwork::Noise::NONE);
+        Ptr<QuantumChannel> channel = network.Channel(0, 1);
+        ApplicationContainer srcApp = TelepSrcHelper(network.qphyent, channel).Install();
+        ApplicationContainer dstApp = TelepDstHelper(network.qphyent, channel).Install();
+
+        AddressValue remote;
+        AddressValue local;
+        srcApp.Get(0)->GetAttribute("Remote", remote);
+        dstApp.Get(0)->GetAttribute("Local", local);
+        NS_TEST_EXPECT_MSG_EQ(InetSocketAddress::IsMatchingType(remote.Get()),
+                              true,
+                              "Remote is an IP address with a port");
+        NS_TEST_EXPECT_MSG_EQ(remote.Get(),
+                              local.Get(),
+                              "the source sends to the address of the destination");
+        Simulator::Destroy();
+    }
+
     void DoRun() override
     {
+        CheckAddresses();
+
         const QuantumTensorData ideal = DensityMatrix(TEST_STATE);
         for (auto variant : {Variant::SAMPLED, Variant::ADAPT, Variant::ADAPT_CHAIN})
         {
@@ -616,11 +689,12 @@ class EntanglementSwappingTestCase : public TestCase
         {
             Ptr<QuantumChannel> channel = network.Channel(i, i + 1);
             network.qphyent->SetDepolarModel(channel, EPR_FIDELITY);
-            auto distributor = DynamicCast<DistributeEprSrcProtocol>(
-                network.qphyent->GetConn2Apps(channel, QNS_APP_DIST_EPR).first);
+            Ptr<DistributeEprProtocol> distributor =
+                network.nodes.Get(i)->GetObject<DistributeEprProtocol>();
             Simulator::Schedule(MilliSeconds(100),
-                                &DistributeEprSrcProtocol::GenerateAndDistributeEpr,
+                                &DistributeEprProtocol::DistributeEpr,
                                 distributor,
+                                network.owners[i + 1],
                                 std::pair<std::string, std::string>{latter[i], former[i + 1]});
         }
     }
@@ -679,9 +753,7 @@ class EntanglementSwappingTestCase : public TestCase
         }
         {
             // Exact, with the flags handed from node to node.
-            TestNetwork network(N_NODES,
-                                TestNetwork::Noise::CHANNEL_ONLY,
-                                QuantumNetStackHelper::Connectivity::NONE);
+            TestNetwork network(N_NODES, TestNetwork::Noise::CHANNEL_ONLY);
             Ptr<QuantumPhyEntity> qphyent = network.qphyent;
             EntSwapAdaptLocalHelper helper(qphyent);
             helper.SetAttribute("QubitsFormer", PointerValue(CreateObject<QuantumMemory>(former)));
@@ -810,7 +882,7 @@ class DistillationTestCase : public TestCase
                                   TOLERANCE,
                                   "exact fidelity after one round");
 
-        // Two levels are three rounds, contracted with the "distill" optimizer.
+        // Two levels are three rounds.
         // The rounds do not twirl, so the second level amplifies the phase
         // flips that the first level left; the simulation must reproduce that.
         const ExactResult twoLevels = RunExact(4);
@@ -862,6 +934,7 @@ class QuantumTestSuite : public TestSuite
         AddTestCase(new QuantumBasisTestCase, TestCase::Duration::QUICK);
         AddTestCase(new QuantumStateTestCase, TestCase::Duration::QUICK);
         AddTestCase(new QuantumNoiseTestCase, TestCase::Duration::QUICK);
+        AddTestCase(new QuantumOnlyNetworkTestCase, TestCase::Duration::QUICK);
         AddTestCase(new TeleportationTestCase, TestCase::Duration::QUICK);
         AddTestCase(new EntanglementSwappingTestCase, TestCase::Duration::QUICK);
         AddTestCase(new DistillationTestCase, TestCase::Duration::QUICK);

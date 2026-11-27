@@ -99,9 +99,11 @@ TelepLinAdaptApp::Teleport()
     m_qubits.second = m_epr.first;
     m_qubit = m_epr.second;
 
-    auto distributor = DynamicCast<DistributeEprSrcProtocol>(
-        qphyent->GetConn2Apps(m_channel, QNS_APP_DIST_EPR).first);
-    Simulator::ScheduleNow(&DistributeEprSrcProtocol::GenerateAndDistributeEpr, distributor, m_epr);
+    Ptr<DistributeEprProtocol> distributor = GetEprProtocol();
+    Simulator::ScheduleNow(&DistributeEprProtocol::DistributeEpr,
+                           distributor,
+                           m_channel->GetDstOwner(),
+                           m_epr);
 
     // Rotate the two local qubits into the Bell basis; they become the flags
     // that select the X and Z corrections.
@@ -198,7 +200,7 @@ TelepLinAdaptApp::HandleMessage(const std::string& message, const Address& from)
     Simulator::ScheduleNow(&QuantumPhyEntity::PartialTrace,
                            qphyent,
                            std::vector<std::string>{m_qubitsPred.first});
-    Simulator::ScheduleNow(&QuantumPhyEntity::Contract, qphyent, std::string("ascend"));
+    Simulator::ScheduleNow(&QuantumPhyEntity::Contract, qphyent, std::string("auto"));
     Simulator::ScheduleNow(&TelepLinAdaptApp::NotifyFinished, this);
 }
 

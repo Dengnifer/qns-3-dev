@@ -93,10 +93,10 @@ TelepAdaptApp::DoStartApplication()
                                std::vector<std::string>{m_qubits.first});
     }
 
-    auto distributor = DynamicCast<DistributeEprSrcProtocol>(
-        qphyent->GetConn2Apps(m_channel, QNS_APP_DIST_EPR).first);
-    Simulator::ScheduleNow(&DistributeEprSrcProtocol::GenerateAndDistributeEpr,
+    Ptr<DistributeEprProtocol> distributor = GetEprProtocol();
+    Simulator::ScheduleNow(&DistributeEprProtocol::DistributeEpr,
                            distributor,
+                           m_channel->GetDstOwner(),
                            std::pair<std::string, std::string>{m_qubits.second, m_qubit});
 
     // Rotate Alice's two qubits into the Bell basis.
@@ -146,7 +146,7 @@ TelepAdaptApp::DoStartApplication()
     if (m_lastOwner == dstOwner)
     {
         // Collapse the network so that reading the result is cheap.
-        Simulator::Schedule(m_delay, &QuantumPhyEntity::Contract, qphyent, std::string("ascend"));
+        Simulator::Schedule(m_delay, &QuantumPhyEntity::Contract, qphyent, std::string("auto"));
     }
     Simulator::Schedule(m_delay, &TelepAdaptApp::NotifyFinished, this);
 }

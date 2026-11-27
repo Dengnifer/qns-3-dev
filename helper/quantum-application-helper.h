@@ -25,7 +25,11 @@ class QuantumPhyEntity;
  *
  * On top of ApplicationHelper, the class sets the QPhyEntity attribute, knows
  * on which node an application bound to a quantum channel belongs, and wires
- * the classical messages between the two ends of a channel.
+ * the classical messages between the two ends of a channel: when it installs
+ * an application, it sets the Local and Remote attributes from the owner names
+ * and service names that the derived helper declared. The nodes must
+ * therefore have their IP addresses before Install() is called, as for the
+ * application helpers of ns-3.
  */
 class QuantumApplicationHelper : public ApplicationHelper
 {
@@ -65,23 +69,30 @@ class QuantumApplicationHelper : public ApplicationHelper
     void SetHome(const std::string& owner);
 
     /**
-     * Make the application send its messages to a service of a node.
+     * Make the application send its messages to a service of a node. Install()
+     * sets the Remote attribute accordingly.
      *
      * @param owner Owner name of the node.
-     * @param service Name of the service.
+     * @param service Name of the service; see QuantumNode::GetServicePort().
      */
     void SetPeer(const std::string& owner, const std::string& service);
 
     /**
      * Make the application receive messages on a service of its node.
+     * Install() sets the Local attribute accordingly.
      *
-     * @param service Name of the service.
+     * @param service Name of the service; see QuantumNode::GetServicePort().
      */
     void SetService(const std::string& service);
+
+    Ptr<Application> DoInstall(Ptr<Node> node) override;
 
   private:
     Ptr<QuantumPhyEntity> m_qphyent; //!< The quantum physical entity
     std::string m_home;              //!< Owner name of the node Install() installs on
+    std::string m_service;           //!< Service the application receives on, if any
+    std::string m_peerOwner;         //!< Owner name of the peer, if any
+    std::string m_peerService;       //!< Service of the peer that messages are sent to
 };
 
 } // namespace ns3

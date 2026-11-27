@@ -6,26 +6,17 @@
 
 #include "quantum-application.h"
 
+#include "distribute-epr-protocol.h"
 #include "quantum-node.h"
 #include "quantum-phy-entity.h"
 
 #include "ns3/abort.h"
-#include "ns3/address-utils.h"
-#include "ns3/inet-socket-address.h"
-#include "ns3/inet6-socket-address.h"
-#include "ns3/ipv4-address.h"
-#include "ns3/ipv6-address.h"
+#include "ns3/address.h"
 #include "ns3/log.h"
 #include "ns3/node.h"
-#include "ns3/packet.h"
 #include "ns3/pointer.h"
 #include "ns3/simulator.h"
-#include "ns3/socket.h"
-#include "ns3/string.h"
-#include "ns3/udp-socket-factory.h"
 #include "ns3/uinteger.h"
-
-#include <algorithm>
 
 namespace ns3
 {
@@ -46,22 +37,18 @@ QuantumApplication::GetTypeId()
                           PointerValue(),
                           MakePointerAccessor(&QuantumApplication::m_qphyent),
                           MakePointerChecker<QuantumPhyEntity>())
-            .AddAttribute("Service",
-                          "Name of the service on which the application receives messages; "
-                          "empty if it only receives replies.",
-                          StringValue(""),
-                          MakeStringAccessor(&QuantumApplication::m_service),
-                          MakeStringChecker())
-            .AddAttribute("PeerOwner",
-                          "Owner name of the node that messages are sent to.",
-                          StringValue(""),
-                          MakeStringAccessor(&QuantumApplication::m_peerOwner),
-                          MakeStringChecker())
-            .AddAttribute("PeerService",
-                          "Name of the service that messages are sent to.",
-                          StringValue(""),
-                          MakeStringAccessor(&QuantumApplication::m_peerService),
-                          MakeStringChecker())
+            .AddAttribute("Local",
+                          "The address on which the application receives messages, made of "
+                          "an IP address of its node and a UDP port. If not set, the "
+                          "application only receives replies to its own messages.",
+                          AddressValue(),
+                          MakeAddressAccessor(&QuantumApplication::m_local),
+                          MakeAddressChecker())
+            .AddAttribute("Remote",
+                          "The address of the peer, made of its IP address and its UDP port.",
+                          AddressValue(),
+                          MakeAddressAccessor(&QuantumApplication::m_remote),
+                          MakeAddressChecker())
             .AddAttribute("PacketSize",
                           "Minimum payload size of a message in bytes; shorter messages "
                           "are padded with zeros.",
@@ -89,42 +76,21 @@ void
 QuantumApplication::DoDispose()
 {
     NS_LOG_FUNCTION(this);
+    m_messenger.Close();
     m_qphyent = nullptr;
-    m_sendSocket = nullptr;
-    m_recvSocket = nullptr;
     Application::DoDispose();
 }
 
 std::string
 QuantumApplication::JoinMessage(const std::vector<std::string>& fields)
 {
-    std::string message;
-    for (std::size_t i = 0; i < fields.size(); ++i)
-    {
-        NS_ABORT_MSG_IF(fields[i].find(MESSAGE_DELIMITER) != std::string::npos,
-                        "The message field " << fields[i] << " contains the delimiter "
-                                             << MESSAGE_DELIMITER);
-        message += (i == 0 ? "" : std::string(1, MESSAGE_DELIMITER)) + fields[i];
-    }
-    return message;
+    return QuantumMessenger::Join(fields);
 }
 
 std::vector<std::string>
 QuantumApplication::SplitMessage(const std::string& message)
 {
-    std::vector<std::string> fields;
-    std::size_t start = 0;
-    while (true)
-    {
-        const std::size_t end = message.find(MESSAGE_DELIMITER, start);
-        fields.push_back(message.substr(start, end - start));
-        if (end == std::string::npos)
-        {
-            break;
-        }
-        start = end + 1;
-    }
-    return fields;
+    return QuantumMessenger::Split(message);
 }
 
 void
@@ -132,22 +98,14 @@ QuantumApplication::StartApplication()
 {
     NS_LOG_FUNCTION(this);
     NS_ABORT_MSG_UNLESS(m_qphyent, "The QPhyEntity attribute of a quantum application is not set");
-    m_running = true;
-    if (!m_service.empty())
+    Ptr<QuantumNode> quantumNode = GetNode()->GetObject<QuantumNode>();
+    NS_ABORT_MSG_UNLESS(quantumNode,
+                        "A quantum application must be installed on a quantum node; "
+                        "see QuantumNetStackHelper");
+    m_messenger.Open(GetNode(), MakeCallback(&QuantumApplication::Receive, this));
+    if (!m_local.IsInvalid())
     {
-        Ptr<QuantumNode> quantumNode = GetNode()->GetObject<QuantumNode>();
-        NS_ABORT_MSG_UNLESS(quantumNode,
-                            "A quantum application must be installed on a quantum "
-                            "node; see QuantumNetStackHelper");
-        const uint16_t port = quantumNode->GetServicePort(m_service);
-        const Address local = Ipv4Address::IsMatchingType(quantumNode->GetAddress())
-                                  ? Address(InetSocketAddress(Ipv4Address::GetAny(), port))
-                                  : Address(Inet6SocketAddress(Ipv6Address::GetAny(), port));
-        m_recvSocket = Socket::CreateSocket(GetNode(), UdpSocketFactory::GetTypeId());
-        NS_ABORT_MSG_IF(m_recvSocket->Bind(local) == -1,
-                        "Failed to bind the service " << m_service << " of " << GetOwner()
-                                                      << " to port " << port);
-        m_recvSocket->SetRecvCallback(MakeCallback(&QuantumApplication::HandleRead, this));
+        m_messenger.Listen(m_local);
     }
     DoStartApplication();
 }
@@ -156,17 +114,7 @@ void
 QuantumApplication::StopApplication()
 {
     NS_LOG_FUNCTION(this);
-    m_running = false;
-    for (auto& socket : {m_sendSocket, m_recvSocket})
-    {
-        if (socket)
-        {
-            socket->SetRecvCallback(MakeNullCallback<void, Ptr<Socket>>());
-            socket->Close();
-        }
-    }
-    m_sendSocket = nullptr;
-    m_recvSocket = nullptr;
+    m_messenger.Close();
 }
 
 void
@@ -182,54 +130,32 @@ QuantumApplication::HandleMessage(const std::string& message, const Address& fro
 }
 
 void
+QuantumApplication::Receive(const std::string& message, const Address& from)
+{
+    NS_LOG_INFO("At " << Simulator::Now().As(Time::S) << " " << GetOwner() << " received \""
+                      << message << "\"");
+    HandleMessage(message, from);
+}
+
+void
 QuantumApplication::SendMessage(const std::string& message)
 {
     NS_LOG_FUNCTION(this << message);
-    NS_ABORT_MSG_IF(m_peerOwner.empty() || m_peerService.empty(),
-                    "A quantum application of " << GetOwner() << " has no peer to send to");
-    Ptr<QuantumNode> peer = m_qphyent->GetQuantumNode(m_peerOwner);
-    SendMessageTo(message,
-                  addressUtils::ConvertToSocketAddress(peer->GetAddress(),
-                                                       peer->GetServicePort(m_peerService)));
+    NS_ABORT_MSG_IF(m_remote.IsInvalid(),
+                    "The Remote attribute of a quantum application of " << GetOwner()
+                                                                        << " is not set");
+    SendMessageTo(message, m_remote);
 }
 
 void
 QuantumApplication::SendMessageTo(const std::string& message, const Address& to)
 {
     NS_LOG_FUNCTION(this << message << to);
-    NS_ABORT_MSG_UNLESS(m_running,
+    NS_ABORT_MSG_UNLESS(m_messenger.IsOpen(),
                         "A quantum application of " << GetOwner() << " sends while not running");
-    NS_ABORT_MSG_IF(message.find('\0') != std::string::npos,
-                    "A message may not contain a null character");
-    if (!m_sendSocket)
-    {
-        m_sendSocket = Socket::CreateSocket(GetNode(), UdpSocketFactory::GetTypeId());
-        m_sendSocket->SetRecvCallback(MakeCallback(&QuantumApplication::HandleRead, this));
-    }
-
-    // The payload is the null-terminated message, padded to the minimum size.
-    std::vector<uint8_t> payload(std::max<std::size_t>(message.size() + 1, m_packetSize), 0);
-    std::copy(message.begin(), message.end(), payload.begin());
-    Ptr<Packet> packet = Create<Packet>(payload.data(), payload.size());
-    m_sendSocket->SendTo(packet, 0, to);
+    m_messenger.SendTo(message, to, m_packetSize);
     NS_LOG_INFO("At " << Simulator::Now().As(Time::S) << " " << GetOwner() << " sent \"" << message
                       << "\"");
-}
-
-void
-QuantumApplication::HandleRead(Ptr<Socket> socket)
-{
-    NS_LOG_FUNCTION(this << socket);
-    Address from;
-    while (Ptr<Packet> packet = socket->RecvFrom(from))
-    {
-        std::vector<uint8_t> payload(packet->GetSize());
-        packet->CopyData(payload.data(), payload.size());
-        const std::string message(payload.begin(), std::find(payload.begin(), payload.end(), 0));
-        NS_LOG_INFO("At " << Simulator::Now().As(Time::S) << " " << GetOwner() << " received \""
-                          << message << "\"");
-        HandleMessage(message, from);
-    }
 }
 
 void
@@ -243,6 +169,16 @@ Ptr<QuantumPhyEntity>
 QuantumApplication::GetQuantumPhyEntity() const
 {
     return m_qphyent;
+}
+
+Ptr<DistributeEprProtocol>
+QuantumApplication::GetEprProtocol() const
+{
+    Ptr<DistributeEprProtocol> protocol = GetNode()->GetObject<DistributeEprProtocol>();
+    NS_ABORT_MSG_UNLESS(protocol,
+                        "The node of " << GetOwner() << " has no Bell pair service; "
+                                       << "install the quantum stack with QuantumNetStackHelper");
+    return protocol;
 }
 
 std::string

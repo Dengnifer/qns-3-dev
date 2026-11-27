@@ -13,16 +13,18 @@
 #include "ns3/simulator.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <exatn.hpp> // after the ns-3 headers: TAL-SH defines macros that break them
-#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <queue>
 #include <set>
 #include <sstream>
 #include <talshxx.hpp>
 #include <thread>
+#include <tuple>
 
 namespace ns3
 {
@@ -64,6 +66,15 @@ EnsureExatnInitialized()
                      "OMP_NUM_THREADS=1"
                   << std::endl;
     }
+#ifndef NO_GPU
+    // A GPU build of ExaTN reserves most of the memory of every GPU it can see.
+    if (!std::getenv("CUDA_VISIBLE_DEVICES"))
+    {
+        std::cerr << "quantum: CUDA_VISIBLE_DEVICES is not set, so ExaTN reserves memory on "
+                     "every GPU of this machine; set it to the GPU to use"
+                  << std::endl;
+    }
+#endif
     exatn::initialize();
     g_exatnAlive = true;
     std::atexit([]() {
@@ -120,13 +131,186 @@ struct Leg
     unsigned index{0};  //!< Position of the leg in the tensor
 };
 
-/// A run of consecutive tensors, node of the tree used by the "distill" optimizer.
-struct Subcircuit
+/**
+ * The shape of a tensor network, for choosing a contraction order.
+ *
+ * Only the sizes matter here, not the entries. Sizes are base-2 logarithms,
+ * so a tensor with n qubit legs has size n.
+ */
+class ContractionGraph
 {
-    unsigned lo{0};       //!< Id of the first tensor
-    unsigned hi{0};       //!< Id of the last tensor
-    std::size_t left{0};  //!< Index of the left child; itself for a leaf
-    std::size_t right{0}; //!< Index of the right child; itself for a leaf
+  public:
+    /**
+     * Read the shape of a network.
+     * @param network The network.
+     */
+    explicit ContractionGraph(const exatn::TensorNetwork& network)
+    {
+        for (auto it = network.cbegin(); it != network.cend(); ++it)
+        {
+            if (it->first == 0)
+            {
+                continue; // the output tensor
+            }
+            Node& node = m_nodes[it->first];
+            const std::vector<exatn::TensorLeg>& legs = it->second.getTensorLegs();
+            for (unsigned i = 0; i < legs.size(); ++i)
+            {
+                const double extent = std::log2(static_cast<double>(it->second.getDimExtent(i)));
+                node.size += extent;
+                if (legs[i].getTensorId() != 0)
+                {
+                    node.bonds[legs[i].getTensorId()] += extent;
+                }
+            }
+        }
+    }
+
+    /**
+     * Get the tensors that are left.
+     * @return The id and the size of each tensor.
+     */
+    std::vector<std::pair<unsigned, double>> GetTensors() const
+    {
+        std::vector<std::pair<unsigned, double>> tensors;
+        tensors.reserve(m_nodes.size());
+        for (const auto& [id, node] : m_nodes)
+        {
+            tensors.emplace_back(id, node.size);
+        }
+        return tensors;
+    }
+
+    /**
+     * Get the tensors that share a leg with a tensor.
+     * @param id Id of the tensor.
+     * @return The ids of its neighbors.
+     */
+    std::vector<unsigned> GetNeighbors(unsigned id) const
+    {
+        std::vector<unsigned> neighbors;
+        for (const auto& [other, extent] : m_nodes.at(id).bonds)
+        {
+            neighbors.push_back(other);
+        }
+        return neighbors;
+    }
+
+    /**
+     * Check whether a tensor is still in the graph.
+     * @param id Id of the tensor.
+     * @return True if the tensor has not been contracted yet.
+     */
+    bool Has(unsigned id) const
+    {
+        return m_nodes.count(id) > 0;
+    }
+
+    /// What a greedy search minimizes at each step.
+    enum class Rule
+    {
+        GROWTH, //!< Entries of the result minus entries of the two operands
+        SIZE,   //!< Entries of the result
+    };
+
+    /**
+     * Rate the contraction of two tensors; lower is better.
+     *
+     * @param rule What to minimize.
+     * @param left Id of one tensor.
+     * @param right Id of the other tensor.
+     * @return The score of the contraction.
+     */
+    double Score(Rule rule, unsigned left, unsigned right) const
+    {
+        const Node& a = m_nodes.at(left);
+        const Node& b = m_nodes.at(right);
+        const double result = a.size + b.size - 2 * Shared(a, right);
+        return rule == Rule::SIZE ? result
+                                  : std::exp2(result) - std::exp2(a.size) - std::exp2(b.size);
+    }
+
+    /**
+     * Replace two tensors by their contraction.
+     *
+     * @param result Id of the new tensor.
+     * @param left Id of one tensor.
+     * @param right Id of the other tensor.
+     */
+    void Contract(unsigned result, unsigned left, unsigned right)
+    {
+        const Node a = m_nodes.at(left);
+        const Node b = m_nodes.at(right);
+        const double shared = Shared(a, right);
+        m_cost += std::exp2(a.size + b.size - shared);
+        m_nodes.erase(left);
+        m_nodes.erase(right);
+
+        Node merged;
+        merged.size = a.size + b.size - 2 * shared;
+        for (const Node* operand : {&a, &b})
+        {
+            for (const auto& [other, extent] : operand->bonds)
+            {
+                if (other != left && other != right)
+                {
+                    merged.bonds[other] += extent;
+                }
+            }
+        }
+        for (const auto& [other, extent] : merged.bonds)
+        {
+            Node& neighbor = m_nodes.at(other);
+            neighbor.bonds.erase(left);
+            neighbor.bonds.erase(right);
+            neighbor.bonds[result] = extent;
+        }
+        m_largest = std::max(m_largest, merged.size);
+        m_nodes[result] = std::move(merged);
+    }
+
+    /**
+     * Get the work done by the contractions so far.
+     * @return The number of multiplications.
+     */
+    double GetCost() const
+    {
+        return m_cost;
+    }
+
+    /**
+     * Get the size of the largest tensor produced so far.
+     * @return The base-2 logarithm of its number of entries.
+     */
+    double GetLargest() const
+    {
+        return m_largest;
+    }
+
+  private:
+    /// A tensor of the network.
+    struct Node
+    {
+        double size{0};                   //!< Size of the tensor
+        std::map<unsigned, double> bonds; //!< Size of the legs shared with each neighbor
+    };
+
+    /**
+     * Get the size of the legs that a tensor shares with another one.
+     *
+     * @param node The tensor.
+     * @param other Id of the other tensor.
+     * @return The size of the shared legs, 0 if there are none.
+     */
+    static double Shared(const Node& node, unsigned other)
+    {
+        const auto it = node.bonds.find(other);
+        return it == node.bonds.end() ? 0.0 : it->second;
+    }
+
+    std::map<unsigned, Node> m_nodes; //!< The tensors that are left
+    double m_cost{0};                 //!< Multiplications so far
+    double m_largest{0};              //!< Size of the largest tensor produced
 };
 
 } // namespace
@@ -235,19 +419,46 @@ class QuantumNetworkSimulator::Impl
     QuantumTensorData Evaluate(exatn::TensorNetwork& network, const std::string& optimizer);
 
     /**
+     * Build the contraction order of the "auto" optimizer.
+     *
+     * It builds several orders and keeps the one that needs the fewest
+     * multiplications: the order of creation and two greedy orders.
+     *
+     * @param network The network.
+     * @return The contraction sequence, in the format of ExaTN.
+     */
+    static std::vector<unsigned> MakeAutoSequence(exatn::TensorNetwork& network);
+
+    /**
+     * Build a greedy contraction order.
+     *
+     * At each step it contracts the two connected tensors with the best score.
+     *
+     * @param network The network.
+     * @param rule What the score minimizes.
+     * @return The contraction sequence, in the format of ExaTN.
+     */
+    static std::vector<unsigned> MakeGreedySequence(exatn::TensorNetwork& network,
+                                                    ContractionGraph::Rule rule);
+
+    /**
+     * Compute the cost of a contraction order.
+     *
+     * @param network The network.
+     * @param sequence The contraction sequence, in the format of ExaTN.
+     * @return The number of multiplications, and the base-2 logarithm of the
+     *         number of entries of the largest tensor.
+     */
+    static std::pair<double, double> RateSequence(const exatn::TensorNetwork& network,
+                                                  const std::vector<unsigned>& sequence);
+
+    /**
      * Build the contraction order of the "ascend" optimizer.
      *
      * @param network The network.
      * @return The contraction sequence, in the format of ExaTN.
      */
     static std::vector<unsigned> MakeAscendingSequence(exatn::TensorNetwork& network);
-
-    /**
-     * Build the contraction order of the "distill" optimizer.
-     *
-     * @return The contraction sequence, in the format of ExaTN.
-     */
-    std::vector<unsigned> MakeDistillSequence();
 
     /**
      * Abort unless qubits are valid.
@@ -266,7 +477,6 @@ class QuantumNetworkSimulator::Impl
     std::vector<std::string> m_tensors;              //!< Tensors registered with ExaTN
     std::map<std::string, std::string> m_gateTensor; //!< Tensor of each gate used so far
     std::map<std::string, QuantumTensorData> m_gateData; //!< Matrix of each custom gate
-    std::vector<Subcircuit> m_subcircuits;               //!< Subcircuits closed by Checkpoint()
 };
 
 QuantumNetworkSimulator::Impl::Impl()
@@ -446,7 +656,111 @@ QuantumNetworkSimulator::Impl::Reduce(const std::vector<std::string>& qubits)
     }
     network.reorderOutputModes(order);
 
-    return Evaluate(network, "greed");
+    return Evaluate(network, "auto");
+}
+
+std::vector<unsigned>
+QuantumNetworkSimulator::Impl::MakeGreedySequence(exatn::TensorNetwork& network,
+                                                  ContractionGraph::Rule rule)
+{
+    /// A pair of tensors that may be contracted next.
+    using Candidate = std::tuple<double, unsigned, unsigned>; // score, left, right
+    std::priority_queue<Candidate, std::vector<Candidate>, std::greater<>> candidates;
+
+    ContractionGraph graph(network);
+    for (const auto& [id, size] : graph.GetTensors())
+    {
+        for (const unsigned other : graph.GetNeighbors(id))
+        {
+            if (id < other)
+            {
+                candidates.emplace(graph.Score(rule, id, other), id, other);
+            }
+        }
+    }
+
+    // Each triple reads (result, left, right). Intermediate results take the
+    // ids after the largest id of the network.
+    unsigned nextId = network.getMaxTensorId() + 1;
+    std::vector<unsigned> sequence;
+    sequence.reserve(3 * network.getNumTensors());
+    auto contract = [&](unsigned left, unsigned right) {
+        graph.Contract(nextId, left, right);
+        sequence.insert(sequence.end(), {nextId, left, right});
+        return nextId++;
+    };
+
+    while (!candidates.empty())
+    {
+        const auto [score, left, right] = candidates.top();
+        candidates.pop();
+        // A contraction never changes the score of the other pairs, so a
+        // candidate is outdated only if one of its tensors is gone.
+        if (!graph.Has(left) || !graph.Has(right))
+        {
+            continue;
+        }
+        const unsigned result = contract(left, right);
+        for (const unsigned other : graph.GetNeighbors(result))
+        {
+            candidates.emplace(graph.Score(rule, other, result), other, result);
+        }
+    }
+
+    // The tensors that are left share no leg: multiply them, smallest first.
+    using Rest = std::pair<double, unsigned>; // size, id
+    std::priority_queue<Rest, std::vector<Rest>, std::greater<>> rest;
+    for (const auto& [id, size] : graph.GetTensors())
+    {
+        rest.emplace(size, id);
+    }
+    while (rest.size() > 1)
+    {
+        const Rest left = rest.top();
+        rest.pop();
+        const Rest right = rest.top();
+        rest.pop();
+        rest.emplace(left.first + right.first, contract(left.second, right.second));
+    }
+
+    // The last result is the output tensor, which has id 0.
+    sequence[sequence.size() - 3] = 0;
+    return sequence;
+}
+
+std::pair<double, double>
+QuantumNetworkSimulator::Impl::RateSequence(const exatn::TensorNetwork& network,
+                                            const std::vector<unsigned>& sequence)
+{
+    ContractionGraph graph(network);
+    for (std::size_t i = 0; i + 2 < sequence.size(); i += 3)
+    {
+        // The last result has id 0, which no other tensor of the graph uses.
+        graph.Contract(sequence[i], sequence[i + 1], sequence[i + 2]);
+    }
+    return {graph.GetCost(), graph.GetLargest()};
+}
+
+std::vector<unsigned>
+QuantumNetworkSimulator::Impl::MakeAutoSequence(exatn::TensorNetwork& network)
+{
+    using Rule = ContractionGraph::Rule;
+    std::vector<unsigned> best = MakeAscendingSequence(network);
+    std::pair<double, double> bestCost = RateSequence(network, best);
+    NS_LOG_DEBUG("Order of creation: " << bestCost.first << " multiplications");
+    for (const Rule rule : {Rule::GROWTH, Rule::SIZE})
+    {
+        std::vector<unsigned> sequence = MakeGreedySequence(network, rule);
+        const std::pair<double, double> cost = RateSequence(network, sequence);
+        NS_LOG_DEBUG("Greedy order " << static_cast<int>(rule) << ": " << cost.first
+                                     << " multiplications");
+        if (cost < bestCost)
+        {
+            best = std::move(sequence);
+            bestCost = cost;
+        }
+    }
+    return best;
 }
 
 std::vector<unsigned>
@@ -465,115 +779,41 @@ QuantumNetworkSimulator::Impl::MakeAscendingSequence(exatn::TensorNetwork& netwo
     return sequence;
 }
 
-std::vector<unsigned>
-QuantumNetworkSimulator::Impl::MakeDistillSequence()
-{
-    NS_ABORT_MSG_IF(m_subcircuits.empty(),
-                    "The distill optimizer needs at least one call to Checkpoint()");
-    m_subcircuits.back().hi = m_nextTensorId - 1;
-
-    // The subcircuits are the nodes of a complete binary tree in post-order.
-    unsigned height = 0;
-    while ((std::size_t{2} << height) <= m_subcircuits.size())
-    {
-        ++height;
-    }
-    NS_ABORT_MSG_IF(m_subcircuits.size() + 1 != (std::size_t{2} << height),
-                    "The distill optimizer needs 2^k - 1 checkpoints, got "
-                        << m_subcircuits.size());
-    std::function<void(std::size_t, unsigned)> setChildren = [&](std::size_t index,
-                                                                 unsigned level) {
-        if (level == 0)
-        {
-            m_subcircuits[index].left = index;
-            m_subcircuits[index].right = index;
-            return;
-        }
-        m_subcircuits[index].left = index - (std::size_t{1} << level);
-        m_subcircuits[index].right = index - 1;
-        setChildren(m_subcircuits[index].left, level - 1);
-        setChildren(m_subcircuits[index].right, level - 1);
-    };
-    setChildren(m_subcircuits.size() - 1, height);
-
-    unsigned nextId = m_nextTensorId;
-    // Contract a list of tensors from left to right.
-    auto ascend = [&nextId](const std::vector<unsigned>& ids) {
-        NS_ABORT_MSG_IF(ids.size() < 2,
-                        "The distill optimizer needs at least two tensors per subcircuit");
-        std::vector<unsigned> sequence{nextId++, ids[0], ids[1]};
-        for (std::size_t i = 2; i < ids.size(); ++i, ++nextId)
-        {
-            sequence.insert(sequence.end(), {nextId, nextId - 1, ids[i]});
-        }
-        return sequence;
-    };
-
-    // The tensors that precede the first checkpoint.
-    std::vector<unsigned> head;
-    for (unsigned id = 1; id < m_subcircuits[0].lo; ++id)
-    {
-        head.push_back(id);
-    }
-    std::vector<unsigned> sequence = ascend(head);
-    const unsigned headId = nextId - 1;
-
-    // Each subcircuit is contracted after its two children.
-    std::function<unsigned(std::size_t)> visit = [&](std::size_t index) {
-        const Subcircuit sub = m_subcircuits[index];
-        std::vector<unsigned> ids;
-        if (sub.left != sub.right)
-        {
-            const unsigned left = visit(sub.left);
-            const unsigned right = visit(sub.right);
-            ids = {left, right};
-        }
-        for (unsigned id = sub.lo; id <= sub.hi; ++id)
-        {
-            ids.push_back(id);
-        }
-        const std::vector<unsigned> part = ascend(ids);
-        sequence.insert(sequence.end(), part.begin(), part.end());
-        return nextId - 1;
-    };
-    const unsigned rootId = visit(m_subcircuits.size() - 1);
-
-    sequence.insert(sequence.end(), {0, headId, rootId});
-    m_subcircuits.clear();
-    return sequence;
-}
-
 QuantumTensorData
 QuantumNetworkSimulator::Impl::Evaluate(exatn::TensorNetwork& network, const std::string& optimizer)
 {
     static const std::set<std::string> exatnOptimizers{"dummy", "heuro", "greed", "metis", "cutnn"};
-    // The custom orders need at least three tensors.
-    const bool large = network.getMaxTensorId() > 2;
-    if (exatnOptimizers.count(optimizer))
-    {
-        exatn::resetContrSeqOptimizer(optimizer);
-    }
-    else if (optimizer == "ascend" && large)
-    {
-        network.importContractionSequence(MakeAscendingSequence(network));
-    }
-    else if (optimizer == "distill" && large)
-    {
-        network.importContractionSequence(MakeDistillSequence());
-    }
-    else if (optimizer == "ascend" || optimizer == "distill")
-    {
-        exatn::resetContrSeqOptimizer("greed");
-    }
-    else
-    {
-        NS_ABORT_MSG("Unknown contraction order optimizer " << optimizer);
-    }
+    static const std::set<std::string> ownOptimizers{"auto", "ascend"};
+    NS_ABORT_MSG_UNLESS(exatnOptimizers.count(optimizer) || ownOptimizers.count(optimizer),
+                        "Unknown contraction order optimizer " << optimizer);
 
     NS_LOG_INFO("Contracting " << network.getNumTensors() << " tensors with the " << optimizer
                                << " optimizer");
     const double start = exatn::Timer::timeInSecHR();
     network.collapseIsometries();
+    if (exatnOptimizers.count(optimizer))
+    {
+        exatn::resetContrSeqOptimizer(optimizer);
+    }
+    else if (network.getMaxTensorId() < 3)
+    {
+        // The orders of this module need at least three tensors.
+        exatn::resetContrSeqOptimizer("greed");
+    }
+    else
+    {
+        // ExaTN skips its own search when it is given an order.
+        const std::vector<unsigned> sequence =
+            optimizer == "auto" ? MakeAutoSequence(network) : MakeAscendingSequence(network);
+        if (g_log.IsEnabled(LOG_INFO))
+        {
+            const std::pair<double, double> cost = RateSequence(network, sequence);
+            NS_LOG_INFO("The order needs " << cost.first
+                                           << " multiplications; its largest tensor has 2^"
+                                           << cost.second << " entries");
+        }
+        network.importContractionSequence(sequence);
+    }
     const bool ok = exatn::evaluateSync(network);
     NS_ABORT_MSG_UNLESS(ok, "ExaTN failed to contract the tensor network");
     NS_LOG_INFO("Contraction took " << exatn::Timer::timeInSecHR(start) << " s");
@@ -774,7 +1014,7 @@ QuantumNetworkSimulator::Impl::ProbabilityOfZero(const std::string& qubit)
             TraceOut(network, nextId, other);
         }
     }
-    const QuantumTensorData scalar = Evaluate(network, "greed");
+    const QuantumTensorData scalar = Evaluate(network, "auto");
     NS_ABORT_MSG_IF(scalar.size() != 1 || std::abs(scalar[0].imag()) > QNS_EPSILON,
                     "The probability of a measurement outcome is not a real number");
     return std::clamp(scalar[0].real(), 0.0, 1.0);
@@ -899,21 +1139,6 @@ QuantumNetworkSimulator::CalculateFidelity(const std::pair<std::string, std::str
     NS_LOG_INFO("The fidelity of (" << epr.first << ", " << epr.second << ") is "
                                     << fidelity.real());
     return fidelity.real();
-}
-
-void
-QuantumNetworkSimulator::Checkpoint()
-{
-    NS_LOG_FUNCTION(this);
-    auto& subcircuits = m_impl->m_subcircuits;
-    if (!subcircuits.empty())
-    {
-        subcircuits.back().hi = m_impl->m_nextTensorId - 1;
-    }
-    Subcircuit next;
-    next.lo = m_impl->m_nextTensorId;
-    next.hi = m_impl->m_nextTensorId;
-    subcircuits.push_back(next);
 }
 
 bool

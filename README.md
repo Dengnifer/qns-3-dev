@@ -94,7 +94,7 @@ distillation of eight Bell pairs:
 
 ```text
 Probability that all rounds succeed: 0.762455
-Fidelity of the distilled pair: 0.86937
+Fidelity of the distilled pair: 0.869377
 ```
 
 ## Performance: set OMP_NUM_THREADS
@@ -104,6 +104,13 @@ variable `OMP_NUM_THREADS` says otherwise. The tensors of a network simulation
 are tiny, so starting the threads costs far more than the contraction. On a
 128-core server the test suite takes 65 s by default and 0.5 s with
 `OMP_NUM_THREADS=1`. Set the variable before you run anything.
+
+## Running on a GPU
+
+The module also runs on an NVIDIA GPU, with a GPU build of ExaTN and the two
+patches in `patches/`. The results are the same. For the protocols of this
+module it is slower than one CPU core, because the tensors are small.
+`doc/gpu.md` has the steps and the measurements.
 
 ## Examples
 
@@ -166,7 +173,13 @@ script reads what it wants from `QuantumPhyEntity` at that moment:
 
 To write a new protocol, derive an application from `QuantumApplication`,
 operate on qubits through `QuantumPhyEntity`, and exchange classical messages
-with `SendMessage` and `HandleMessage`. `model/telep-app.cc` is a short
+with `SendMessage` and `HandleMessage`. A protocol that needs entanglement
+asks the Bell pair service of its node, as a transport protocol asks IP:
+
+```cpp
+GetEprProtocol()->DistributeEpr("Bob", {"A0", "B0"});   // keep A0, send B0 to Bob
+```
+ `model/telep-app.cc` is a short
 example of a sampled protocol and `model/telep-adapt-app.cc` of its exact
 counterpart.
 
@@ -182,6 +195,8 @@ NS_LOG="QuantumNetworkSimulator=info:QuantumPhyEntity=info|logic" ./ns3 run tele
   format of the ns-3 model library.
 - `CHANGES.md` lists the changes between versions, including how to update
   scripts written for the version that accompanied the paper.
+- `doc/decisions.md` records the design decisions and the reasons for them.
+- `doc/gpu.md` explains how to run on a GPU.
 - The headers carry Doxygen comments for every class and method.
 
 ## Development
@@ -191,6 +206,9 @@ NS_LOG="QuantumNetworkSimulator=info:QuantumPhyEntity=info|logic" ./ns3 run tele
 ./test.py -e telep-lin-adapt-example                    # one example as a test
 python3 utils/check-style-clang-format.py contrib/quantum   # ns-3 coding style
 ```
+
+Every push runs `.github/workflows/ci.yml`, which builds ExaTN and ns-3 with
+the module in a clean Ubuntu 22.04 container and then runs these checks.
 
 ## License
 

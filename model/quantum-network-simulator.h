@@ -146,10 +146,12 @@ class QuantumNetworkSimulator
      * Contracting discards the tensors of the traced-out qubits, which keeps
      * the cost of later queries low.
      *
-     * @param optimizer Name of the contraction order optimizer: one of the
-     *                  ExaTN optimizers "dummy", "heuro", "greed", "metis" and
-     *                  "cutnn", or "ascend" (order of creation), or "distill"
-     *                  (binary tree given by the calls to Checkpoint()).
+     * @param optimizer Name of the contraction order optimizer. "auto" builds
+     *                  a few orders and keeps the cheapest; use it unless you
+     *                  have a reason not to. "ascend" contracts the tensors in
+     *                  order of creation. "dummy", "heuro", "greed", "metis"
+     *                  and "cutnn" are the searches of ExaTN, which take
+     *                  minutes on networks of a thousand tensors.
      * @return The density matrix of all remaining qubits.
      */
     QuantumTensorData Contract(const std::string& optimizer);
@@ -161,15 +163,6 @@ class QuantumNetworkSimulator
      * @return The fidelity.
      */
     double CalculateFidelity(const std::pair<std::string, std::string>& epr);
-
-    /**
-     * Mark the end of a subcircuit, for the "distill" optimizer.
-     *
-     * The optimizer contracts the tensors created between two consecutive
-     * checkpoints together, and combines the subcircuits as the nodes of a
-     * complete binary tree listed in post-order.
-     */
-    void Checkpoint();
 
     /**
      * Check whether qubits exist and have not been traced out.

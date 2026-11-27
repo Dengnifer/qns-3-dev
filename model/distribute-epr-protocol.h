@@ -7,7 +7,10 @@
 #ifndef DISTRIBUTE_EPR_PROTOCOL_H
 #define DISTRIBUTE_EPR_PROTOCOL_H
 
-#include "quantum-application.h"
+#include "quantum-messenger.h"
+
+#include "ns3/object.h"
+#include "ns3/traced-callback.h"
 
 #include <string>
 #include <utility>
@@ -15,22 +18,23 @@
 namespace ns3
 {
 
-class QuantumChannel;
-
 /**
  * @ingroup quantum
- * Source side of the distribution of Bell pairs over a quantum channel.
+ * The link-layer service that distributes Bell pairs between nodes.
  *
- * The source creates a Bell pair, keeps the first qubit and sends the second
- * one to the destination. The transfer is announced by a classical message
- * carrying the names of both qubits; the qubit changes owner when the message
- * arrives.
+ * QuantumNetStackHelper aggregates one instance to every quantum node. A
+ * protocol that needs entanglement asks the instance of its own node:
  *
- * QuantumNetStackHelper installs one source and one destination per ordered
- * pair of nodes. Other applications find them with
- * QuantumPhyEntity::GetConn2Apps() under the key #QNS_APP_DIST_EPR.
+ * @code
+ *   GetNode()->GetObject<DistributeEprProtocol>()->DistributeEpr("Bob", {"A0", "B0"});
+ * @endcode
+ *
+ * The node creates the pair, keeps the first qubit and sends the second one.
+ * The transfer is announced by a classical message. When the message arrives,
+ * the instance of the destination gives the qubit to its node, applies the
+ * noise of the quantum channel, and fires the EprReceived trace source.
  */
-class DistributeEprSrcProtocol : public QuantumApplication
+class DistributeEprProtocol : public Object
 {
   public:
     /**
@@ -39,43 +43,55 @@ class DistributeEprSrcProtocol : public QuantumApplication
      */
     static TypeId GetTypeId();
 
+    /// UDP port on which every node receives the announcements of Bell pairs.
+    static constexpr uint16_t PORT{4747};
+
+    DistributeEprProtocol();
+    ~DistributeEprProtocol() override;
+
     /**
-     * Create a Bell pair and send its second qubit to the destination.
+     * Create a Bell pair on this node and send its second qubit to another node.
      *
-     * @param epr Unique names of the two qubits; the first stays at the source.
+     * @param dstOwner Owner name of the node that receives the second qubit.
+     * @param epr Unique names of the two qubits; the first stays on this node.
      */
-    void GenerateAndDistributeEpr(const std::pair<std::string, std::string>& epr);
+    void DistributeEpr(const std::string& dstOwner, const std::pair<std::string, std::string>& epr);
 
-  protected:
-    void DoDispose() override;
-
-  private:
-    Ptr<QuantumChannel> m_channel; //!< The quantum channel to the destination
-};
-
-/**
- * @ingroup quantum
- * Destination side of the distribution of Bell pairs over a quantum channel.
- *
- * On each announcement the destination takes ownership of the arriving qubit
- * and applies the noise of the channel to it.
- */
-class DistributeEprDstProtocol : public QuantumApplication
-{
-  public:
     /**
-     * Get the type ID.
-     * @return The object TypeId.
+     * TracedCallback signature for a distributed Bell pair.
+     *
+     * @param peer Owner name of the node at the other end.
+     * @param srcQubit Name of the qubit that stayed at the source.
+     * @param dstQubit Name of the qubit that went to the destination.
      */
-    static TypeId GetTypeId();
+    typedef void (*EprTracedCallback)(const std::string& peer,
+                                      const std::string& srcQubit,
+                                      const std::string& dstQubit);
 
   protected:
+    void DoInitialize() override;
     void DoDispose() override;
 
   private:
-    void HandleMessage(const std::string& message, const Address& from) override;
+    /**
+     * Open the messenger on the node, unless it is open already.
+     */
+    void EnsureOpen();
 
-    Ptr<QuantumChannel> m_channel; //!< The quantum channel from the source
+    /**
+     * Take delivery of the qubit that a message announces.
+     *
+     * @param message The announcement: source owner and the two qubit names.
+     * @param from Socket address of the sender.
+     */
+    void HandleMessage(const std::string& message, const Address& from);
+
+    QuantumMessenger m_messenger; //!< Carries the announcements
+
+    /// Trace fired at the source when a pair has been sent.
+    TracedCallback<const std::string&, const std::string&, const std::string&> m_sentTrace;
+    /// Trace fired at the destination when a qubit has arrived.
+    TracedCallback<const std::string&, const std::string&, const std::string&> m_receivedTrace;
 };
 
 } // namespace ns3

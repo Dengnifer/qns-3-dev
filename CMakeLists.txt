@@ -44,7 +44,6 @@ build_lib(
   SOURCE_FILES helper/distill-helper.cc
                helper/distill-nested-adapt-helper.cc
                helper/distill-nested-helper.cc
-               helper/distribute-epr-helper.cc
                helper/ent-swap-adapt-helper.cc
                helper/ent-swap-adapt-local-helper.cc
                helper/ent-swap-helper.cc
@@ -65,6 +64,7 @@ build_lib(
                model/quantum-channel.cc
                model/quantum-error-model.cc
                model/quantum-memory.cc
+               model/quantum-messenger.cc
                model/quantum-network-simulator.cc
                model/quantum-node.cc
                model/quantum-operation.cc
@@ -76,7 +76,6 @@ build_lib(
   HEADER_FILES helper/distill-helper.h
                helper/distill-nested-adapt-helper.h
                helper/distill-nested-helper.h
-               helper/distribute-epr-helper.h
                helper/ent-swap-adapt-helper.h
                helper/ent-swap-adapt-local-helper.h
                helper/ent-swap-helper.h
@@ -97,6 +96,7 @@ build_lib(
                model/quantum-channel.h
                model/quantum-error-model.h
                model/quantum-memory.h
+               model/quantum-messenger.h
                model/quantum-network-simulator.h
                model/quantum-node.h
                model/quantum-operation.h

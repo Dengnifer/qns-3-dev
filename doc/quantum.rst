@@ -97,16 +97,39 @@ Tensor network engine
 ``QuantumNetworkSimulator`` stores the density matrix of all qubits as a tensor
 network and appends tensors for state preparations, gates, noise and partial
 traces. It hides ExaTN from the rest of the module. ``Contract`` collapses the
-network into one tensor; the order of contraction is chosen by an ExaTN
-optimizer or by one of two orders of the module, "ascend" for chains and
-"distill" for trees.
+network into one tensor.
+
+The cost of a contraction depends strongly on the order in which the tensors
+are multiplied. The default optimizer, "auto", builds three orders, the order
+of creation and two greedy orders, counts the multiplications that each one
+needs, and gives the cheapest to ExaTN. Finding the order takes milliseconds.
+The optimizers of ExaTN ("greed", "metis" and others) remain available by
+name, but their search takes minutes on a network of a thousand tensors.
+
+Bell pair service
+=================
+
+Entanglement between two nodes starts with a Bell pair. Distributing one is a
+service below the applications, like IP below TCP: every quantum node has one
+``DistributeEprProtocol`` aggregated to it, and a protocol that needs a pair
+asks the instance of its own node::
+
+    GetNode()->GetObject<DistributeEprProtocol>()->DistributeEpr("Bob", {"A0", "B0"});
+
+The node creates the pair, keeps the first qubit and announces the second one
+to the destination by a classical message. When the message arrives, the
+instance of the destination takes the qubit, applies the channel noise and
+fires its trace source ``EprReceived``.
 
 Applications
 ============
 
 The protocols are applications derived from ``QuantumApplication``, which
-exchanges short messages over UDP, on IPv4 or IPv6. Applications address each
-other by owner name and service name.
+exchanges short messages over UDP, on IPv4 or IPv6. As in the applications of
+ns-3, the attribute ``Remote`` holds the address and port of the peer and the
+attribute ``Local`` the address and port on which the application receives.
+The helpers set both from the owner names of the quantum channel when they
+install an application, so the nodes need their IP addresses by then.
 
 .. list-table::
    :header-rows: 1
@@ -114,9 +137,6 @@ other by owner name and service name.
    * - Protocol
      - Sampled
      - Exact (adapted)
-   * - Bell pair distribution
-     - ``DistributeEprSrcProtocol``, ``DistributeEprDstProtocol``
-     -
    * - Teleportation
      - ``TelepSrcApp``, ``TelepDstApp``
      - ``TelepAdaptApp``, ``TelepLinAdaptApp`` (chain)
@@ -164,9 +184,8 @@ where ``Report`` states what the script wants to know::
 Helpers
 =======
 
-``QuantumNetStackHelper`` installs the quantum stack, with Bell pair
-distribution between every pair of nodes, along a chain, or only where
-``Connect`` asks for it. Each application has a helper derived from
+``QuantumNetStackHelper`` installs the quantum stack on every node: its
+``QuantumNode`` and its ``DistributeEprProtocol``. Each application has a helper derived from
 ``QuantumApplicationHelper``; a helper constructed for a quantum channel
 installs its application on the right end of the channel with ``Install()``.
 
@@ -177,8 +196,8 @@ Attributes
   ``DefaultDepolarModel``.
 * ``TimeModel``: ``CoherenceTime``. ``DephaseModel``: ``CoherenceTime``,
   ``GateDuration``. ``DepolarModel``: ``Fidelity``.
-* ``QuantumApplication``: ``QPhyEntity``, ``Service``, ``PeerOwner``,
-  ``PeerService``, ``PacketSize``.
+* ``QuantumApplication``: ``QPhyEntity``, ``Local``, ``Remote``,
+  ``PacketSize``.
 * The applications add the names of their qubits and their timing, for example
   ``LocalOperationDelay``, ``StepInterval`` and ``EprInterval``.
 

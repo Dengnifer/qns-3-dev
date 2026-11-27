@@ -149,8 +149,7 @@ EntSwapAdaptLocalApp::EntanglementSwapping()
                            std::vector<std::string>{lastQubit});
     traceOut(flagZ);
 
-    // Contracting in order of creation follows the chain.
-    Simulator::ScheduleNow(&QuantumPhyEntity::Contract, qphyent, std::string("ascend"));
+    Simulator::ScheduleNow(&QuantumPhyEntity::Contract, qphyent, std::string("auto"));
     Simulator::ScheduleNow(&EntSwapAdaptLocalApp::NotifyFinished, this);
 }
 

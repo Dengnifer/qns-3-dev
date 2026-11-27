@@ -24,7 +24,6 @@
 namespace ns3
 {
 
-class Application;
 class Node;
 class QuantumChannel;
 class QuantumErrorModel;
@@ -120,14 +119,6 @@ class QuantumPhyEntity : public Object
                              const std::vector<std::string>& qubits);
 
     /**
-     * Create a Bell pair at the source of a quantum channel.
-     *
-     * @param channel The channel whose source creates the pair.
-     * @param epr Unique names of the two qubits.
-     */
-    void GenerateEpr(Ptr<QuantumChannel> channel, const std::pair<std::string, std::string>& epr);
-
-    /**
      * Apply a gate, with memory noise before it and gate noise after it.
      *
      * @param owner Owner that applies the gate; it must own the qubits.
@@ -214,7 +205,7 @@ class QuantumPhyEntity : public Object
      *                  QuantumNetworkSimulator::Contract().
      * @return The density matrix of all remaining qubits.
      */
-    QuantumTensorData Contract(const std::string& optimizer = "greed");
+    QuantumTensorData Contract(const std::string& optimizer = "auto");
 
     /**
      * Compute the fidelity of two qubits with respect to the Bell state #QNS_BELL.
@@ -223,11 +214,6 @@ class QuantumPhyEntity : public Object
      * @return The fidelity.
      */
     double CalculateFidelity(const std::pair<std::string, std::string>& epr);
-
-    /**
-     * Mark the end of a subcircuit; see QuantumNetworkSimulator::Checkpoint().
-     */
-    void Checkpoint();
 
     /**
      * Allocate a name for an ancilla qubit.
@@ -277,10 +263,13 @@ class QuantumPhyEntity : public Object
     /**
      * Apply the noise of a quantum channel to a qubit that arrives over it.
      *
-     * @param channel The channel.
-     * @param qubit Name of the qubit that crossed the channel.
+     * @param srcOwner Owner name of the node that sent the qubit.
+     * @param dstOwner Owner name of the node that received the qubit.
+     * @param qubit Name of the qubit.
      */
-    void ApplyChannelNoise(Ptr<QuantumChannel> channel, const std::string& qubit);
+    void ApplyChannelNoise(const std::string& srcOwner,
+                           const std::string& dstOwner,
+                           const std::string& qubit);
 
     /// @}
 
@@ -303,41 +292,6 @@ class QuantumPhyEntity : public Object
      * @return True if @p owner is #QNS_GOD_OWNER or owns all of the qubits.
      */
     bool CheckOwned(const std::string& owner, const std::vector<std::string>& qubits) const;
-
-    /// @}
-
-    /// @name Applications of a connection
-    /// @{
-
-    /**
-     * Record the pair of applications that run a protocol over a channel.
-     *
-     * @param channel The channel.
-     * @param protocol Name of the protocol.
-     * @param apps The applications at the source and at the destination.
-     */
-    void AddConn2Apps(Ptr<QuantumChannel> channel,
-                      const std::string& protocol,
-                      const std::pair<Ptr<Application>, Ptr<Application>>& apps);
-
-    /**
-     * Check whether applications are recorded for a protocol over a channel.
-     *
-     * @param channel The channel.
-     * @param protocol Name of the protocol.
-     * @return True if AddConn2Apps() was called for the channel and the protocol.
-     */
-    bool HasConn2Apps(Ptr<QuantumChannel> channel, const std::string& protocol) const;
-
-    /**
-     * Find the pair of applications that run a protocol over a channel.
-     *
-     * @param channel The channel.
-     * @param protocol Name of the protocol.
-     * @return The applications at the source and at the destination.
-     */
-    std::pair<Ptr<Application>, Ptr<Application>> GetConn2Apps(Ptr<QuantumChannel> channel,
-                                                               const std::string& protocol) const;
 
     /// @}
 
@@ -421,11 +375,6 @@ class QuantumPhyEntity : public Object
     std::map<std::pair<std::string, std::string>, Ptr<QuantumErrorModel>> m_gateModel;
     /// Channel noise, per source and destination.
     std::map<std::pair<std::string, std::string>, Ptr<QuantumErrorModel>> m_channelModel;
-
-    /// Applications per channel (source, destination) and protocol.
-    std::map<std::pair<std::pair<std::string, std::string>, std::string>,
-             std::pair<Ptr<Application>, Ptr<Application>>>
-        m_apps;
 
     Ptr<UniformRandomVariable> m_random; //!< Picks measurement outcomes
 

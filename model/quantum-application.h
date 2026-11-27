@@ -7,6 +7,8 @@
 #ifndef QUANTUM_APPLICATION_H
 #define QUANTUM_APPLICATION_H
 
+#include "quantum-messenger.h"
+
 #include "ns3/address.h"
 #include "ns3/application.h"
 #include "ns3/ptr.h"
@@ -18,8 +20,8 @@
 namespace ns3
 {
 
+class DistributeEprProtocol;
 class QuantumPhyEntity;
-class Socket;
 
 /**
  * @ingroup quantum
@@ -27,14 +29,17 @@ class Socket;
  *
  * A quantum protocol alternates local quantum operations with classical
  * messages. This class provides the classical half: it exchanges short text
- * messages with a peer over UDP, on IPv4 or IPv6, and hands each received
- * message to HandleMessage(). Derived classes implement the protocol in
- * DoStartApplication() and HandleMessage().
+ * messages with a peer and hands each received message to HandleMessage().
+ * Derived classes implement the protocol in DoStartApplication() and
+ * HandleMessage(), and call NotifyFinished() when it ends.
  *
- * Applications address each other by owner name and service name rather than
- * by IP address and port. The names are resolved when a message is sent, see
- * QuantumNode::GetAddress() and QuantumNode::GetServicePort(), so applications
- * can be installed in any order, before or after addresses are assigned.
+ * As in SourceApplication and SinkApplication, the peer is the socket address
+ * in the Remote attribute and the application receives on the socket address
+ * in the Local attribute. QuantumApplicationHelper fills in both when it
+ * installs the application.
+ *
+ * An application that needs entanglement asks the Bell pair service of its
+ * node, see GetEprProtocol().
  */
 class QuantumApplication : public Application
 {
@@ -48,13 +53,10 @@ class QuantumApplication : public Application
     QuantumApplication();
     ~QuantumApplication() override;
 
-    /// Character that separates the fields of a message.
-    static constexpr char MESSAGE_DELIMITER{'.'};
-
     /**
      * Encode fields as one message.
      *
-     * @param fields The fields, none of which may contain #MESSAGE_DELIMITER.
+     * @param fields The fields, none of which may contain QuantumMessenger::DELIMITER.
      * @return The message.
      */
     static std::string JoinMessage(const std::vector<std::string>& fields);
@@ -78,16 +80,7 @@ class QuantumApplication : public Application
     void DoDispose() override;
 
     /**
-     * Report that the protocol of this application has finished.
-     *
-     * This fires the Finished trace source. Applications do not compute
-     * results themselves: a simulation script connects to the trace source and
-     * reads what it wants from QuantumPhyEntity at that moment.
-     */
-    void NotifyFinished();
-
-    /**
-     * Start the protocol; called once the sockets are open.
+     * Start the protocol; called once the application can send and receive.
      */
     virtual void DoStartApplication();
 
@@ -100,7 +93,7 @@ class QuantumApplication : public Application
     virtual void HandleMessage(const std::string& message, const Address& from);
 
     /**
-     * Send a message to the peer set by the PeerOwner and PeerService attributes.
+     * Send a message to the peer set by the Remote attribute.
      *
      * @param message The message; it may not contain a null character.
      */
@@ -116,11 +109,27 @@ class QuantumApplication : public Application
     void SendMessageTo(const std::string& message, const Address& to);
 
     /**
+     * Report that the protocol of this application has finished.
+     *
+     * This fires the Finished trace source. Applications do not compute
+     * results themselves: a simulation script connects to the trace source and
+     * reads what it wants from QuantumPhyEntity at that moment.
+     */
+    void NotifyFinished();
+
+    /**
      * Get the quantum physical entity.
      *
      * @return The quantum physical entity.
      */
     Ptr<QuantumPhyEntity> GetQuantumPhyEntity() const;
+
+    /**
+     * Get the Bell pair service of the node the application is installed on.
+     *
+     * @return The protocol that distributes Bell pairs from this node.
+     */
+    Ptr<DistributeEprProtocol> GetEprProtocol() const;
 
     /**
      * Get the owner name of the node the application is installed on.
@@ -134,22 +143,21 @@ class QuantumApplication : public Application
     void StopApplication() override;
 
     /**
-     * Read the packets waiting on the receiving socket.
+     * Log a received message and pass it to HandleMessage().
      *
-     * @param socket The receiving socket.
+     * @param message The message.
+     * @param from Socket address of the sender.
      */
-    void HandleRead(Ptr<Socket> socket);
+    void Receive(const std::string& message, const Address& from);
 
     Ptr<QuantumPhyEntity> m_qphyent; //!< The quantum physical entity
-    std::string m_service;           //!< Service on which messages are received, if any
-    std::string m_peerOwner;         //!< Owner name of the peer
-    std::string m_peerService;       //!< Service of the peer that messages are sent to
+    Address m_local;                 //!< Socket address to receive on, if any
+    Address m_remote;                //!< Socket address of the peer, if any
     uint32_t m_packetSize{0};        //!< Minimum payload size of a message, in bytes
-    bool m_running{false};           //!< Whether the application has started and not stopped
-    Ptr<Socket> m_sendSocket;        //!< Socket to send messages and to receive the replies
+    QuantumMessenger m_messenger;    //!< Carries the classical messages
+
     /// Trace fired when the protocol has finished.
     TracedCallback<Ptr<const QuantumApplication>> m_finishedTrace;
-    Ptr<Socket> m_recvSocket; //!< Socket to receive messages on the service port
 };
 
 } // namespace ns3

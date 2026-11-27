@@ -82,7 +82,6 @@ inline const std::string QNS_GATE_QOR = QNS_GATE_PREFIX + "QOR";   //!< Quantum 
 
 /// @name Names of the protocols, used to register and to address their applications
 /// @{
-inline const std::string QNS_APP_DIST_EPR = QNS_PREFIX + "dist_epr"; //!< EPR distribution
 inline const std::string QNS_APP_TELEP = QNS_PREFIX + "telep";       //!< Teleportation
 inline const std::string QNS_APP_ENT_SWAP = QNS_PREFIX + "ent_swap"; //!< Entanglement swapping
 inline const std::string QNS_APP_DISTILL = QNS_PREFIX + "distill";   //!< Distillation

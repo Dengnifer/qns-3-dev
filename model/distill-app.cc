@@ -80,14 +80,15 @@ void
 DistillSrcApp::DoStartApplication()
 {
     NS_LOG_FUNCTION(this);
-    auto distributor = DynamicCast<DistributeEprSrcProtocol>(
-        GetQuantumPhyEntity()->GetConn2Apps(m_channel, QNS_APP_DIST_EPR).first);
-    Simulator::ScheduleNow(&DistributeEprSrcProtocol::GenerateAndDistributeEpr,
+    Ptr<DistributeEprProtocol> distributor = GetEprProtocol();
+    Simulator::ScheduleNow(&DistributeEprProtocol::DistributeEpr,
                            distributor,
+                           m_channel->GetDstOwner(),
                            m_eprGoal);
     Simulator::Schedule(m_interval,
-                        &DistributeEprSrcProtocol::GenerateAndDistributeEpr,
+                        &DistributeEprProtocol::DistributeEpr,
                         distributor,
+                        m_channel->GetDstOwner(),
                         m_eprMeas);
     Simulator::Schedule(2 * m_interval, &DistillSrcApp::MeasureAndSend, this);
 }

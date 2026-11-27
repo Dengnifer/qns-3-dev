@@ -13,7 +13,6 @@
 #include "quantum-operation.h"
 
 #include "ns3/abort.h"
-#include "ns3/application.h"
 #include "ns3/double.h"
 #include "ns3/log.h"
 #include "ns3/node.h"
@@ -103,7 +102,6 @@ QuantumPhyEntity::DoDispose()
     // Release the objects that point back to this entity. The engine stays, so
     // that results can still be read after Simulator::Destroy().
     m_nodes.clear();
-    m_apps.clear();
     Object::DoDispose();
 }
 
@@ -175,14 +173,6 @@ QuantumPhyEntity::GenerateQubitsMixed(const std::string& owner,
     NS_LOG_FUNCTION(this << owner << qubits.size());
     m_engine->GenerateQubitsMixed(owner, data, qubits);
     RegisterQubits(owner, qubits);
-}
-
-void
-QuantumPhyEntity::GenerateEpr(Ptr<QuantumChannel> channel,
-                              const std::pair<std::string, std::string>& epr)
-{
-    NS_LOG_FUNCTION(this << channel << epr.first << epr.second);
-    GenerateQubitsPure(channel->GetSrcOwner(), QNS_BELL, {epr.first, epr.second});
 }
 
 void
@@ -303,13 +293,6 @@ QuantumPhyEntity::CalculateFidelity(const std::pair<std::string, std::string>& e
     return m_engine->CalculateFidelity(epr);
 }
 
-void
-QuantumPhyEntity::Checkpoint()
-{
-    NS_LOG_FUNCTION(this);
-    m_engine->Checkpoint();
-}
-
 std::string
 QuantumPhyEntity::AllocAncillaQubit()
 {
@@ -382,14 +365,15 @@ QuantumPhyEntity::ApplyGateNoise(const std::string& owner,
 }
 
 void
-QuantumPhyEntity::ApplyChannelNoise(Ptr<QuantumChannel> channel, const std::string& qubit)
+QuantumPhyEntity::ApplyChannelNoise(const std::string& srcOwner,
+                                    const std::string& dstOwner,
+                                    const std::string& qubit)
 {
-    NS_LOG_FUNCTION(this << channel << qubit);
-    auto it = m_channelModel.find(channel->GetOwners());
+    NS_LOG_FUNCTION(this << srcOwner << dstOwner << qubit);
+    auto it = m_channelModel.find({srcOwner, dstOwner});
     Ptr<QuantumErrorModel> model = it == m_channelModel.end() ? m_defaultDepolarModel : it->second;
-    NS_LOG_LOGIC("The qubit " << qubit << " crossed the channel from " << channel->GetSrcOwner()
-                              << " to " << channel->GetDstOwner() << " with the "
-                              << model->GetDescription());
+    NS_LOG_LOGIC("The qubit " << qubit << " crossed the channel from " << srcOwner << " to "
+                              << dstOwner << " with the " << model->GetDescription());
     ApplyOperation(model->GetOperation(Time(0)), {qubit});
 }
 
@@ -410,32 +394,6 @@ QuantumPhyEntity::CheckOwned(const std::string& owner, const std::vector<std::st
     return std::all_of(qubits.begin(), qubits.end(), [&memory](const std::string& qubit) {
         return memory->HasQubit(qubit);
     });
-}
-
-void
-QuantumPhyEntity::AddConn2Apps(Ptr<QuantumChannel> channel,
-                               const std::string& protocol,
-                               const std::pair<Ptr<Application>, Ptr<Application>>& apps)
-{
-    NS_LOG_FUNCTION(this << channel << protocol);
-    m_apps[{channel->GetOwners(), protocol}] = apps;
-}
-
-bool
-QuantumPhyEntity::HasConn2Apps(Ptr<QuantumChannel> channel, const std::string& protocol) const
-{
-    return m_apps.count({channel->GetOwners(), protocol}) > 0;
-}
-
-std::pair<Ptr<Application>, Ptr<Application>>
-QuantumPhyEntity::GetConn2Apps(Ptr<QuantumChannel> channel, const std::string& protocol) const
-{
-    auto it = m_apps.find({channel->GetOwners(), protocol});
-    NS_ABORT_MSG_IF(it == m_apps.end(),
-                    "No " << protocol << " applications are installed from "
-                          << channel->GetSrcOwner() << " to " << channel->GetDstOwner()
-                          << "; see QuantumNetStackHelper::Connect()");
-    return it->second;
 }
 
 int64_t

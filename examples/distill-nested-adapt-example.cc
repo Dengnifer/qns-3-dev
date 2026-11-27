@@ -46,6 +46,7 @@ ReportDistillation(Ptr<QuantumPhyEntity> qphyent, Ptr<const QuantumApplication> 
     std::cout << "Fidelity of the distilled pair: " << qphyent->CalculateFidelity({"A0", "B0"})
               << std::endl;
     g_finished = true;
+    Simulator::Stop();
 }
 
 int
@@ -77,8 +78,7 @@ main(int argc, char* argv[])
     // The quantum network on top of it.
     const std::vector<std::string> owners{"Alice", "Bob"};
     QuantumNetStackHelper stack;
-    Ptr<QuantumPhyEntity> qphyent =
-        stack.Install(nodes, owners, QuantumNetStackHelper::Connectivity::CHAIN);
+    Ptr<QuantumPhyEntity> qphyent = stack.Install(nodes, owners);
 
     qphyent->GetQuantumNode("Alice")->SetTimeModel(coherenceTime);
     qphyent->GetQuantumNode("Bob")->SetTimeModel(coherenceTime);
@@ -103,10 +103,10 @@ main(int argc, char* argv[])
     apps.Get(0)->TraceConnectWithoutContext("Finished",
                                             MakeBoundCallback(&ReportDistillation, qphyent));
 
-    // Each pair is allotted 10 ms, the default EprInterval.
-    Simulator::Stop(MilliSeconds(10) * (nPairs + 2));
+    // The report stops the simulation; this is only a deadline.
+    Simulator::Stop(Hours(1));
     Simulator::Run();
-    NS_ABORT_MSG_UNLESS(g_finished, "The protocol did not finish before the simulation stopped");
+    NS_ABORT_MSG_UNLESS(g_finished, "The protocol did not finish");
 
     Simulator::Destroy();
     return 0;

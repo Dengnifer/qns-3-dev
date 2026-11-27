@@ -92,8 +92,10 @@ Setting up a network:
 | `qphyent->GetNode(owner)` | `qphyent->GetQuantumNode(owner)` |
 | `qphyent->SetOwnerAddress(owner, address)` | Not needed: the address of the node is used. `QuantumNode::SetAddress` overrides it |
 | `qphyent->SetOwnerRank(owner, rank)` | Removed; it had no effect |
-| `QuantumNetStackHelper::Install(nodes)` connects every pair | `Install(nodes, owners, connectivity)` with `FULL_MESH` (default), `CHAIN` or `NONE`, and `Connect(qphyent, src, dst)` |
-| `QuantumNode::AllocPort()`, `GetNextPort()` | Removed. Applications are addressed by owner name and service name |
+| `QuantumNetStackHelper::Install(nodes)` installs a pair of EPR applications for every ordered pair of nodes | `Install(nodes, owners)` gives every node one `DistributeEprProtocol`; any node can then send a pair to any other |
+| `QuantumNode::AllocPort()`, `GetNextPort()` | Removed. `QuantumNode::GetServicePort(name)` gives a service one fixed port |
+| The helpers guessed the port of the peer (`GetNextPort()`) | The helper sets `Remote` and `Local`, socket addresses as in `SourceApplication` and `SinkApplication` of ns-3, when it installs the application. The nodes need their IP addresses before `Install()` |
+| Bell pair applications on ports from the counter | `DistributeEprProtocol` listens on the fixed port `DistributeEprProtocol::PORT`, as ns-3 routing protocols do |
 
 Noise:
 
@@ -103,7 +105,7 @@ Noise:
 | `channel->SetDepolarModel(fidelity, qphyent)` | `qphyent->SetDepolarModel(channel, fidelity)` |
 | `TimeModel(rate)`, `DephaseModel(rate)`, `DepolarModel(fidelity)` | Attributes `CoherenceTime`, `GateDuration`, `Fidelity` |
 | `QuantumErrorModel::ApplyErrorModel(qphyent, qubits, moment)` | `QuantumErrorModel::GetOperation(elapsed)` returns the noise; `QuantumPhyEntity` applies it |
-| Three overloads of `QuantumPhyEntity::ApplyErrorModel` | `ApplyChannelNoise(channel, qubit)`; memory and gate noise are applied automatically |
+| Three overloads of `QuantumPhyEntity::ApplyErrorModel` | `ApplyChannelNoise(srcOwner, dstOwner, qubit)`; memory and gate noise are applied automatically |
 | `default_time_model`, `default_dephase_model`, `default_depolar_model` | Attributes `DefaultTimeModel`, `DefaultDephaseModel`, `DefaultDepolarModel` of `QuantumPhyEntity` |
 | Macro `GATE_DURATION` | Attribute `GateDuration` of `DephaseModel` |
 
@@ -114,7 +116,7 @@ Operations on qubits:
 | `PeekDM(owner, qubits, dm)` | `PeekDensityMatrix(owner, qubits)` returns the matrix |
 | `CalculateFidelity(epr, fidel)` | `CalculateFidelity(epr)` returns the fidelity |
 | `Measure(owner, {qubit})` returns a `std::pair` | `Measure(owner, qubit)` returns a `QuantumMeasurement` |
-| `GenerateEPR` | `GenerateEpr` |
+| `GenerateEPR(channel, epr)` | Removed; use `DistributeEprProtocol::DistributeEpr`, or `GenerateQubitsPure(owner, QNS_BELL, qubits)` for a local pair |
 | Functions return `bool`, always `true` | Functions return nothing and abort with a message on misuse |
 | (none) | `PostSelect(owner, qubit, outcome)` |
 | Free function `AllocAncillaQubit()` | `QuantumPhyEntity::AllocAncillaQubit()` |
@@ -142,9 +144,11 @@ Applications and helpers:
 | Before | Now |
 | --- | --- |
 | Every application derives from `Application` | Every application derives from `QuantumApplication`, which provides `SendMessage` and `HandleMessage` |
-| Attributes `PeerAddress`, `PeerPort`, `Port`, `DataSize`, `Pnode` | Attributes `PeerOwner`, `PeerService`, `Service`, `PacketSize`; the helpers set them |
-| `DistributeEPRSrcProtocol`, `DistributeEPRDstProtocol`, `...Helper` | `DistributeEprSrcProtocol`, `DistributeEprDstProtocol`, `DistributeEprSrcHelper`, `DistributeEprDstHelper` |
-| `GenerateAndDistributeEPR(epr)` | `GenerateAndDistributeEpr(epr)` |
+| Attributes `PeerAddress`, `PeerPort`, `Port`, `DataSize`, `Pnode` | Attributes `Remote`, `Local`, `PacketSize`; the helpers set them |
+| `DistributeEPRSrcProtocol` and `DistributeEPRDstProtocol`, two applications per ordered pair of nodes, and their helpers | `DistributeEprProtocol`, one object aggregated to each node; no helper is needed |
+| `qphyent->GetConn2Apps(conn, APP_DIST_EPR).first->GetObject<DistributeEPRSrcProtocol>()->GenerateAndDistributeEPR(epr)` | `node->GetObject<DistributeEprProtocol>()->DistributeEpr(dstOwner, epr)`; inside an application, `GetEprProtocol()` |
+| `QuantumPhyEntity::AddConn2Apps`, `GetConn2Apps` | Removed; protocols are found on the node with `GetObject` |
+| The arrival of a qubit could not be observed | Trace sources `EprSent` and `EprReceived` of `DistributeEprProtocol` |
 | `DistillApp` with attribute `Checker` | `DistillSrcApp` (Alice) and `DistillDstApp` (Bob), `DistillSrcHelper`, `DistillDstHelper` |
 | `DistillNestedApp` with attribute `Checker` | `DistillNestedSrcApp`, `DistillNestedDstApp`, `DistillNestedSrcHelper`, `DistillNestedDstHelper` |
 | `DistillNestedAdaptApp` with attribute `Checker`; `GetWin()` measures | One role, on Alice's node. When it has finished, `PostSelect(owner, flag, 1)` returns the success probability |
@@ -163,8 +167,31 @@ Other:
 - `QuantumChannel` keeps the constructors from two owner names and from two
   quantum nodes; the two constructors from a `std::pair` are gone.
 - Public headers no longer include ExaTN headers.
+- `Contract()` takes the new contraction order "auto" by default; see
+  Performance below. The order "distill" and `Checkpoint()` are removed:
+  "auto" finds a cheaper order by itself, so an application no longer has to
+  tell the engine where its subcircuits end.
 
 ### Performance
+
+- **The module now chooses the contraction order itself.** ExaTN's own search
+  for an order ("greed") took far longer than the contraction: 242 s of a
+  242 s run for the exact swapping chain of 64 nodes. The new order "auto"
+  builds three orders (the order of creation and two greedy orders), counts
+  the multiplications of each, and hands the cheapest to ExaTN. It is the
+  default of `Contract()` and of every query (`Measure`, `PostSelect`,
+  `PeekDensityMatrix`, `CalculateFidelity`), and all applications use it.
+  Results are unchanged. Times on one core:
+
+  | Run | Before | Now |
+  | --- | --- | --- |
+  | `ent-swap-adapt-example --nNodes=16` | 3.7 s | 0.09 s |
+  | `ent-swap-adapt-example --nNodes=64` | 242 s | 0.31 s |
+  | `ent-swap-example --nNodes=16` (sampled) | more than 580 s | 0.73 s |
+  | `telep-lin-example --nNodes=16` (sampled) | more than 60 s | 1.4 s |
+  | `distill-nested-example --nPairs=16` (sampled) | more than 60 s | 1.7 s |
+  | `distill-nested-adapt-example --nPairs=512` | 2.4 s | 2.3 s |
+  | `ent-swap-adapt-local-example --nNodes=1024` | 2.2 s | 2.4 s |
 
 - ExaTN runs every contraction on all cores unless `OMP_NUM_THREADS` is set.
   For the tiny tensors of a network simulation this is far slower than one
@@ -172,6 +199,22 @@ Other:
   with `OMP_NUM_THREADS=1`. The thread count can only be set from the
   environment, so the module prints a one-line hint when the variable is not
   set on a machine with more than four cores.
+
+### ExaTN and GPU
+
+- **Two patches for ExaTN**, in `patches/`. One fixes a crash when a program
+  that uses a GPU build of ExaTN exits. The other adds the environment
+  variables `TALSH_GFLOP_THRESH_GPU` and `TALSH_GPU_BUFFER_MB`; without them
+  ExaTN sends only contractions above 4 billion multiplications to the GPU,
+  which no network simulation reaches, and reserves 90 % of the memory of
+  every GPU.
+- **The module runs on a GPU**, unchanged, with ExaTN built for CUDA; see
+  `doc/gpu.md`. On an RTX 4090 the test suite and the examples give the same
+  results as on the CPU. They are slower, by a factor of 2 to 6 for the large
+  examples, because the tensors are small.
+- The module prints a reminder when it runs on a GPU build of ExaTN and
+  `CUDA_VISIBLE_DEVICES` is not set, because ExaTN then reserves memory on
+  every GPU of the machine.
 
 ### Build
 
@@ -189,3 +232,5 @@ Other:
 - The test suite `quantum` replaces the empty template: `./test.py -s quantum`.
 - The examples take command-line arguments instead of `#define N`, print their
   results, and are listed in `test/examples-to-run.py`.
+- A GitHub Actions workflow builds ExaTN and ns-3 with the module and runs the
+  test suite, the examples and the ns-3 style check on every push.

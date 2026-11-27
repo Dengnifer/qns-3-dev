@@ -148,7 +148,7 @@ EntSwapAdaptApp::EntanglementSwapping()
                            qphyent,
                            std::vector<std::string>{flagZ});
 
-    Simulator::ScheduleNow(&QuantumPhyEntity::Contract, qphyent, std::string("greed"));
+    Simulator::ScheduleNow(&QuantumPhyEntity::Contract, qphyent, std::string("auto"));
     Simulator::ScheduleNow(&EntSwapAdaptApp::NotifyFinished, this);
 }
 

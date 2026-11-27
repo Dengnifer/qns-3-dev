@@ -23,21 +23,13 @@ class QuantumPhyEntity;
  * @ingroup quantum
  * Turns ordinary nodes into the nodes of a quantum network.
  *
- * The helper creates the QuantumPhyEntity of the network, gives every node an
- * owner name and a quantum memory, and installs the applications that
- * distribute Bell pairs between nodes.
+ * The helper creates the QuantumPhyEntity of the network and installs the
+ * quantum stack on every node: an owner name, a quantum memory, and the
+ * service that distributes Bell pairs.
  */
 class QuantumNetStackHelper
 {
   public:
-    /// Which pairs of nodes can distribute Bell pairs to each other.
-    enum class Connectivity
-    {
-        NONE,     //!< No pair; see Connect()
-        CHAIN,    //!< Each node to the next one in the container
-        FULL_MESH //!< Every ordered pair of nodes
-    };
-
     QuantumNetStackHelper();
 
     /**
@@ -51,27 +43,15 @@ class QuantumNetStackHelper
     /**
      * Make the nodes a quantum network.
      *
+     * Every node gets a QuantumNode, which holds its owner name and its quantum
+     * memory, and a DistributeEprProtocol, which distributes Bell pairs.
+     *
      * @param nodes The nodes.
      * @param owners Unique owner names, one per node.
-     * @param connectivity Which pairs of nodes can distribute Bell pairs.
      * @return The quantum physical entity of the new network.
      */
     Ptr<QuantumPhyEntity> Install(const NodeContainer& nodes,
-                                  const std::vector<std::string>& owners,
-                                  Connectivity connectivity = Connectivity::FULL_MESH) const;
-
-    /**
-     * Let one node distribute Bell pairs to another.
-     *
-     * Does nothing if the two nodes are connected already.
-     *
-     * @param qphyent The quantum physical entity of the network.
-     * @param srcOwner Owner name of the node that creates the pairs.
-     * @param dstOwner Owner name of the node that receives one qubit of each pair.
-     */
-    void Connect(Ptr<QuantumPhyEntity> qphyent,
-                 const std::string& srcOwner,
-                 const std::string& dstOwner) const;
+                                  const std::vector<std::string>& owners) const;
 
   private:
     ObjectFactory m_phyFactory; //!< Creates the quantum physical entity

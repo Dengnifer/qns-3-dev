@@ -1,0 +1,46 @@
+Make exatn::initialize() wait until the execution thread has set up its node
+executor (TAL-SH, and with it CUDA and cuBLAS).
+
+Without this, initialize() can return first. A program that then registers
+exatn::finalize() with std::atexit() registers it before CUDA registers its
+own exit handler, so at exit CUDA shuts down first and the shutdown of TAL-SH
+aborts: "#FATAL(exatn::runtime::TalshNodeExecutor): Unable to shut down
+TAL-SH!". This shows on a GPU build; on a CPU build the patch changes nothing
+visible.
+
+For ExaTN revision c528f7e. Apply in the root of the ExaTN source tree:
+
+    git apply /path/to/exatn.patch
+
+diff --git a/src/runtime/tensor_runtime.cpp b/src/runtime/tensor_runtime.cpp
+index 8c230e6..af075ba 100644
+--- a/src/runtime/tensor_runtime.cpp
++++ b/src/runtime/tensor_runtime.cpp
+@@ -89,6 +89,7 @@ void TensorRuntime::launchExecutionThread()
+     alive_.store(true);
+     //std::cout << "#DEBUG(exatn::runtime::TensorRuntime)[MAIN_THREAD]: Launching Execution Thread ... " << std::flush;
+     exec_thread_ = std::thread(&TensorRuntime::executionThreadWorkflow,this);
++    while(!(node_executor_ready_.load())) std::this_thread::yield(); //wait until the node executor (TAL-SH, CUDA) is initialized
+     //std::cout << "Done" << std::endl << std::flush;
+   }
+   return; //only the main thread returns to the client
+@@ -99,6 +100,7 @@ void TensorRuntime::executionThreadWorkflow()
+ {
+   graph_executor_->resetNodeExecutor(exatn::getService<TensorNodeExecutor>(node_executor_name_),
+                                      parameters_,num_processes_,process_rank_,global_process_rank_);
++  node_executor_ready_.store(true); //unblock launchExecutionThread()
+   //std::cout << "#DEBUG(exatn::runtime::TensorRuntime)[EXEC_THREAD]: DAG node executor set to "
+             //<< node_executor_name_ << std::endl << std::flush;
+   while(alive_.load()){ //alive_ is set by the main thread
+diff --git a/src/runtime/tensor_runtime.hpp b/src/runtime/tensor_runtime.hpp
+index 4e3ff22..0719c0d 100644
+--- a/src/runtime/tensor_runtime.hpp
++++ b/src/runtime/tensor_runtime.hpp
+@@ -261,6 +261,7 @@ private:
+   std::atomic<bool> scope_set_; //TRUE if the current scope is set
+   /** End of life flag **/
+   std::atomic<bool> alive_; //TRUE while the main thread is accepting new operations from Client
++  std::atomic<bool> node_executor_ready_{false}; //TRUE once the execution thread has initialized the node executor
+   /** Execution thread **/
+   std::thread exec_thread_;
+   /** Data request mutex **/

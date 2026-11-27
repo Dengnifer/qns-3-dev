@@ -45,6 +45,7 @@ ReportDistillation(Ptr<QuantumPhyEntity> qphyent, Ptr<const QuantumApplication> 
     std::cout << "Fidelity of the remaining pair: " << qphyent->CalculateFidelity({"A0", "B0"})
               << (win ? "" : " (not meaningful after a failed round)") << std::endl;
     g_finished = true;
+    Simulator::Stop();
 }
 
 int
@@ -74,8 +75,7 @@ main(int argc, char* argv[])
     // The quantum network on top of it.
     const std::vector<std::string> owners{"Alice", "Bob"};
     QuantumNetStackHelper stack;
-    Ptr<QuantumPhyEntity> qphyent =
-        stack.Install(nodes, owners, QuantumNetStackHelper::Connectivity::CHAIN);
+    Ptr<QuantumPhyEntity> qphyent = stack.Install(nodes, owners);
 
     // Noise: Alice's memory, Bob's CNOT gates, and the quantum channel.
     qphyent->GetQuantumNode("Alice")->SetTimeModel(MilliSeconds(130));
@@ -102,10 +102,10 @@ main(int argc, char* argv[])
     DistillNestedDstHelper dstHelper(qphyent, channel);
     dstHelper.Install();
 
-    // Each pair and each round takes one step of 100 ms.
-    Simulator::Stop(MilliSeconds(100) * (2 * nPairs + 1));
+    // The report stops the simulation; this is only a deadline.
+    Simulator::Stop(Hours(1));
     Simulator::Run();
-    NS_ABORT_MSG_UNLESS(g_finished, "The protocol did not finish before the simulation stopped");
+    NS_ABORT_MSG_UNLESS(g_finished, "The protocol did not finish");
 
     Simulator::Destroy();
     return 0;

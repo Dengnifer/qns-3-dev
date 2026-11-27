@@ -10,6 +10,7 @@
 #include "quantum-phy-entity.h"
 
 #include "ns3/abort.h"
+#include "ns3/address-utils.h"
 #include "ns3/ipv4.h"
 #include "ns3/ipv6.h"
 #include "ns3/log.h"
@@ -86,7 +87,7 @@ QuantumNode::SetAddress(const Address& address)
 }
 
 Address
-QuantumNode::GetAddress() const
+QuantumNode::FindAddress() const
 {
     if (!m_address.IsInvalid())
     {
@@ -120,9 +121,23 @@ QuantumNode::GetAddress() const
             }
         }
     }
-    NS_ABORT_MSG("The node of " << m_owner << " has neither an IPv4 nor a global IPv6 address; "
-                                << "assign addresses before installing quantum applications");
     return Address();
+}
+
+bool
+QuantumNode::HasAddress() const
+{
+    return !FindAddress().IsInvalid();
+}
+
+Address
+QuantumNode::GetAddress() const
+{
+    const Address address = FindAddress();
+    NS_ABORT_MSG_IF(address.IsInvalid(),
+                    "The node of " << m_owner << " has neither an IPv4 nor a global IPv6 address; "
+                                   << "it needs one to exchange classical messages");
+    return address;
 }
 
 uint16_t
@@ -138,6 +153,12 @@ QuantumNode::GetServicePort(const std::string& service)
     const uint16_t port = m_nextPort++;
     m_servicePorts[service] = port;
     return port;
+}
+
+Address
+QuantumNode::GetServiceAddress(const std::string& service)
+{
+    return addressUtils::ConvertToSocketAddress(GetAddress(), GetServicePort(service));
 }
 
 void

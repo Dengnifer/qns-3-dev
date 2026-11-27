@@ -104,13 +104,13 @@ DistillNestedSrcApp::Distillate(const std::vector<std::string>& srcQubits,
     }
     else
     {
-        auto distributor = DynamicCast<DistributeEprSrcProtocol>(
-            GetQuantumPhyEntity()->GetConn2Apps(m_channel, QNS_APP_DIST_EPR).first);
+        Ptr<DistributeEprProtocol> distributor = GetEprProtocol();
         for (std::size_t i = 0; i < 2; ++i)
         {
             Simulator::Schedule(m_occupied,
-                                &DistributeEprSrcProtocol::GenerateAndDistributeEpr,
+                                &DistributeEprProtocol::DistributeEpr,
                                 distributor,
+                                m_channel->GetDstOwner(),
                                 std::pair<std::string, std::string>{srcQubits[i], dstQubits[i]});
             m_occupied += m_interval;
         }

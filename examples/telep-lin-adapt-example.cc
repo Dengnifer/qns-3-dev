@@ -62,6 +62,7 @@ ReportTeleportedState(Ptr<QuantumPhyEntity> qphyent,
     std::cout << std::endl;
     std::cout << "Fidelity with the input state: " << overlap.real() << std::endl;
     g_finished = true;
+    Simulator::Stop();
 }
 
 int
@@ -99,8 +100,7 @@ main(int argc, char* argv[])
         owners.push_back("Owner" + std::to_string(i));
     }
     QuantumNetStackHelper stack;
-    Ptr<QuantumPhyEntity> qphyent =
-        stack.Install(nodes, owners, QuantumNetStackHelper::Connectivity::CHAIN);
+    Ptr<QuantumPhyEntity> qphyent = stack.Install(nodes, owners);
 
     // The state to teleport: sqrt(5/7) |0> + i sqrt(2/7) |1>.
     const QuantumTensorData state{{std::sqrt(5.0 / 7.0), 0.0}, {0.0, std::sqrt(2.0 / 7.0)}};
@@ -129,9 +129,10 @@ main(int argc, char* argv[])
         "Finished",
         MakeBoundCallback(&ReportTeleportedState, qphyent, state, owners.back() + "_Qubit0"));
 
-    Simulator::Stop(MilliSeconds(100) * nNodes);
+    // The report stops the simulation; this is only a deadline.
+    Simulator::Stop(Hours(1));
     Simulator::Run();
-    NS_ABORT_MSG_UNLESS(g_finished, "The protocol did not finish before the simulation stopped");
+    NS_ABORT_MSG_UNLESS(g_finished, "The protocol did not finish");
 
     Simulator::Destroy();
     return 0;

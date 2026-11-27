@@ -45,6 +45,7 @@ ReportFidelity(Ptr<QuantumPhyEntity> qphyent,
     std::cout << "Fidelity of the pair shared by the first and the last node: "
               << qphyent->CalculateFidelity(pair) << std::endl;
     g_finished = true;
+    Simulator::Stop();
 }
 
 int
@@ -84,8 +85,7 @@ main(int argc, char* argv[])
         owners.push_back("Owner" + std::to_string(i));
     }
     QuantumNetStackHelper stack;
-    Ptr<QuantumPhyEntity> qphyent =
-        stack.Install(nodes, owners, QuantumNetStackHelper::Connectivity::CHAIN);
+    Ptr<QuantumPhyEntity> qphyent = stack.Install(nodes, owners);
 
     // Name the qubits: node i shares "former" with node i - 1 and "latter" with node i + 1.
     std::vector<std::string> former;
@@ -101,11 +101,11 @@ main(int argc, char* argv[])
     {
         Ptr<QuantumChannel> channel = CreateObject<QuantumChannel>(owners[i], owners[i + 1]);
         qphyent->SetDepolarModel(channel, fidelity);
-        auto distributor = DynamicCast<DistributeEprSrcProtocol>(
-            qphyent->GetConn2Apps(channel, QNS_APP_DIST_EPR).first);
+        Ptr<DistributeEprProtocol> distributor = nodes.Get(i)->GetObject<DistributeEprProtocol>();
         Simulator::Schedule(MilliSeconds(100),
-                            &DistributeEprSrcProtocol::GenerateAndDistributeEpr,
+                            &DistributeEprProtocol::DistributeEpr,
                             distributor,
+                            owners[i + 1],
                             std::pair<std::string, std::string>{latter[i], former[i + 1]});
     }
 
@@ -128,9 +128,10 @@ main(int argc, char* argv[])
                           qphyent,
                           std::pair<std::string, std::string>{latter.front(), former.back()}));
 
-    Simulator::Stop((nNodes - 1) * swapInterval);
+    // The report stops the simulation; this is only a deadline.
+    Simulator::Stop(Hours(1));
     Simulator::Run();
-    NS_ABORT_MSG_UNLESS(g_finished, "The protocol did not finish before the simulation stopped");
+    NS_ABORT_MSG_UNLESS(g_finished, "The protocol did not finish");
 
     Simulator::Destroy();
     return 0;

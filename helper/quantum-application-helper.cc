@@ -7,11 +7,11 @@
 #include "quantum-application-helper.h"
 
 #include "ns3/abort.h"
+#include "ns3/address.h"
 #include "ns3/node.h"
 #include "ns3/pointer.h"
 #include "ns3/quantum-node.h"
 #include "ns3/quantum-phy-entity.h"
-#include "ns3/string.h"
 
 namespace ns3
 {
@@ -45,14 +45,35 @@ QuantumApplicationHelper::SetHome(const std::string& owner)
 void
 QuantumApplicationHelper::SetPeer(const std::string& owner, const std::string& service)
 {
-    SetAttribute("PeerOwner", StringValue(owner));
-    SetAttribute("PeerService", StringValue(service));
+    m_peerOwner = owner;
+    m_peerService = service;
 }
 
 void
 QuantumApplicationHelper::SetService(const std::string& service)
 {
-    SetAttribute("Service", StringValue(service));
+    m_service = service;
+}
+
+Ptr<Application>
+QuantumApplicationHelper::DoInstall(Ptr<Node> node)
+{
+    // Turn the names into socket addresses now, as the helpers of ns-3 do.
+    if (!m_service.empty())
+    {
+        Ptr<QuantumNode> quantumNode = node->GetObject<QuantumNode>();
+        NS_ABORT_MSG_UNLESS(quantumNode,
+                            "A quantum application must be installed on a quantum node; "
+                            "see QuantumNetStackHelper");
+        m_factory.Set("Local", AddressValue(quantumNode->GetServiceAddress(m_service)));
+    }
+    if (!m_peerOwner.empty())
+    {
+        m_factory.Set(
+            "Remote",
+            AddressValue(m_qphyent->GetQuantumNode(m_peerOwner)->GetServiceAddress(m_peerService)));
+    }
+    return ApplicationHelper::DoInstall(node);
 }
 
 } // namespace ns3

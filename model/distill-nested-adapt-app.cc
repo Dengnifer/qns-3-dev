@@ -108,8 +108,7 @@ DistillNestedAdaptApp::Distillate(const std::vector<std::string>& srcQubits,
         Distillate(GetFirstHalf(srcQubits), GetFirstHalf(dstQubits));
         Distillate(GetSecondHalf(srcQubits), GetSecondHalf(dstQubits));
     }
-    // The rounds are scheduled in post-order of the distillation tree, which is
-    // the order the "distill" contraction optimizer expects.
+    // The rounds are scheduled in post-order of the distillation tree.
     Simulator::Schedule(m_occupied,
                         &DistillNestedAdaptApp::DistillateOnce,
                         this,
@@ -128,18 +127,15 @@ DistillNestedAdaptApp::DistillateOnce(const std::vector<std::string>& srcQubits,
     const std::pair<std::string, std::string> goal{srcQubits[0], dstQubits[0]};
     const std::pair<std::string, std::string> meas{srcQubits[half], dstQubits[half]};
 
-    // Each round is one subcircuit for the "distill" contraction optimizer.
-    Simulator::Schedule(m_occupied, &QuantumPhyEntity::Checkpoint, qphyent);
-
     if (srcQubits.size() == 2)
     {
-        auto distributor = DynamicCast<DistributeEprSrcProtocol>(
-            qphyent->GetConn2Apps(m_channel, QNS_APP_DIST_EPR).first);
+        Ptr<DistributeEprProtocol> distributor = GetEprProtocol();
         for (const auto& epr : {goal, meas})
         {
             Simulator::Schedule(m_occupied,
-                                &DistributeEprSrcProtocol::GenerateAndDistributeEpr,
+                                &DistributeEprProtocol::DistributeEpr,
                                 distributor,
+                                m_channel->GetDstOwner(),
                                 epr);
             m_occupied += m_interval;
         }
@@ -197,10 +193,7 @@ DistillNestedAdaptApp::DistillateOnce(const std::vector<std::string>& srcQubits,
     if (srcQubits.size() == m_srcQubits->GetSize())
     {
         // This was the last round.
-        Simulator::Schedule(m_occupied,
-                            &QuantumPhyEntity::Contract,
-                            qphyent,
-                            std::string("distill"));
+        Simulator::Schedule(m_occupied, &QuantumPhyEntity::Contract, qphyent, std::string("auto"));
         Simulator::Schedule(m_occupied, &DistillNestedAdaptApp::NotifyFinished, this);
     }
 }

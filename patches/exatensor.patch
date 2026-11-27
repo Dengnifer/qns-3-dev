@@ -1,0 +1,61 @@
+Let two settings of TAL-SH, which are compile-time constants, be changed from
+the environment. Both are read once, when TAL-SH starts. Without the
+variables TAL-SH behaves as before.
+
+TALSH_GFLOP_THRESH_GPU=<GFlop>
+    A contraction runs on a GPU only if its size is above this threshold.
+    The built-in value is 4. With 0 every contraction runs on a GPU.
+
+TALSH_GPU_BUFFER_MB=<MiB>
+    Upper limit of the memory that TAL-SH reserves on each GPU. The built-in
+    behavior is to reserve 90 % of the free memory of every visible GPU.
+
+For the ExaTensor revision that ExaTN c528f7e pins (e9efb95). Apply in the
+submodule tpls/ExaTensor of the ExaTN source tree:
+
+    git -C tpls/ExaTensor apply /path/to/exatensor.patch
+
+diff --git a/TALSH/mem_manager.cpp b/TALSH/mem_manager.cpp
+index a8a708a..b3029d2 100644
+--- a/TALSH/mem_manager.cpp
++++ b/TALSH/mem_manager.cpp
+@@ -262,7 +262,9 @@ OUTPUT:
+        if(VERBOSE) printf("#ERROR(TALSH:mem_manager:arg_buf_allocate): CUDA error: %s\n",err_msg);
+        return 10;
+       }
+-      hsize=(size_t)(float(hsize)/100.0f*float(GPU_MEM_PART_USED)); hsize-=hsize%mem_alloc_dec; err_code=1;
++      hsize=(size_t)(float(hsize)/100.0f*float(GPU_MEM_PART_USED));
++      {const char * env_mb=getenv("TALSH_GPU_BUFFER_MB"); if(env_mb != NULL){size_t cap=(size_t)(atoll(env_mb))*1048576; if(cap > 0 && cap < hsize) hsize=cap;}} //optional cap on the GPU buffer
++      hsize-=hsize%mem_alloc_dec; err_code=1;
+       while(hsize > mem_alloc_dec){
+        err=cudaMalloc(&arg_buf_gpu[i],hsize);
+        if(err != cudaSuccess){
+diff --git a/TALSH/talshc.cpp b/TALSH/talshc.cpp
+index 667cd84..1a6ba42 100644
+--- a/TALSH/talshc.cpp
++++ b/TALSH/talshc.cpp
+@@ -126,6 +126,7 @@ int talsh_tensor_image_info(const talsh_tens_t * talsh_tens, //in: TAL-SH tensor
+                             void ** gmem_p,                  //out: global memory pointer to the image location
+                             int * buf_entry);                //out: argument buffer entry holding the image (-1:none)
+ // Discard tensor body images:
++static double talsh_gflop_thresh_gpu=(double)(TALSH_GFLOP_THRESH_GPU); //GPU offload threshold (GFlop), env TALSH_GFLOP_THRESH_GPU at talshInit
+ static int talsh_tensor_image_discard(talsh_tens_t * talsh_tens, int image_id);
+ static int talsh_tensor_image_discard_other(talsh_tens_t * talsh_tens, int image_id);
+ // Choose an appropriate tensor body image to use in a tensor operation:
+@@ -379,7 +380,7 @@ int talshDetermineOptimalDevice(const talsh_tens_t * tens0, const talsh_tens_t *
+  s[2]=0; if(tens2 != NULL) s[2]=talshTensorVolume(tens2);
+  if(s[0] > 0 && s[1] > 0 && s[2] > 0){
+   gflops=sqrt(((double)(s[0]))*((double)(s[1]))*((double)(s[2])))/(1e9); //FMA GFlop (no FMA or complex factors)
+-  if(gflops > (double)(TALSH_GFLOP_THRESH_GPU)) good_for_gpu=1;
++  if(gflops > talsh_gflop_thresh_gpu) good_for_gpu=1;
+  }
+  devid=DEV_NULL; for(i=0;i<3;++i) ovl[i]=0;
+  //Overlap tens0 and tens1:
+@@ -554,6 +555,7 @@ int talshInit(size_t * host_buf_size,    //inout: Host Argument Buffer size in b
+ 
+ #pragma omp flush
+  if(talsh_on) return TALSH_ALREADY_INITIALIZED;
++ {const char * env_thresh=getenv("TALSH_GFLOP_THRESH_GPU"); if(env_thresh != NULL) talsh_gflop_thresh_gpu=atof(env_thresh);}
+ //CPU Host:
+ #ifndef NO_BLAS
+  talsh_cpu=DEV_ON_BLAS;

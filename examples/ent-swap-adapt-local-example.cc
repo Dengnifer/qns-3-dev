@@ -45,6 +45,7 @@ ReportFidelity(Ptr<QuantumPhyEntity> qphyent,
     std::cout << "Fidelity of the pair shared by the first and the last node: "
               << qphyent->CalculateFidelity(pair) << std::endl;
     g_finished = true;
+    Simulator::Stop();
 }
 
 int
@@ -84,8 +85,7 @@ main(int argc, char* argv[])
         owners.push_back("Owner" + std::to_string(i));
     }
     QuantumNetStackHelper stack;
-    Ptr<QuantumPhyEntity> qphyent =
-        stack.Install(nodes, owners, QuantumNetStackHelper::Connectivity::NONE);
+    Ptr<QuantumPhyEntity> qphyent = stack.Install(nodes, owners);
 
     // The last node applies the corrections with noisy gates.
     Ptr<QuantumNode> lastNode = qphyent->GetQuantumNode(owners.back());
@@ -113,9 +113,10 @@ main(int argc, char* argv[])
                           qphyent,
                           std::pair<std::string, std::string>{latter.front(), former.back()}));
 
-    Simulator::Stop(Seconds(1));
+    // The report stops the simulation; this is only a deadline.
+    Simulator::Stop(Hours(1));
     Simulator::Run();
-    NS_ABORT_MSG_UNLESS(g_finished, "The protocol did not finish before the simulation stopped");
+    NS_ABORT_MSG_UNLESS(g_finished, "The protocol did not finish");
 
     Simulator::Destroy();
     return 0;

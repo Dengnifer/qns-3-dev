@@ -1,0 +1,136 @@
+# Builds ExaTN and ns-3 with the quantum module, then runs the test suite,
+# the examples and the ns-3 style check.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NS3_VERSION: "3.49"
+  # ExaTN has no releases. This is the revision the module is tested with.
+  EXATN_COMMIT: c528f7ec7323ab5f4485b85efcefa016c32e1a2d
+  # ExaTN needs Boost 1.64.0. This is the checksum of the official archive.
+  BOOST_SHA256: 7bcc5caace97baa948931d712ea5f37038dbb1c5d89b43ad4def4ed7cb683332
+  # ExaTN contracts small tensor networks much faster with one thread.
+  OMP_NUM_THREADS: "1"
+  # The ns3 script refuses to run for a user named root.
+  USER: ci
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    # The image pins the compilers: gcc, g++ and gfortran 11.
+    container: ubuntu:22.04
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install packages
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential gfortran libblas-dev liblapack-dev \
+            git ca-certificates curl bzip2 python3 python3-pip ccache
+          python3 -m pip install --no-cache-dir "cmake>=3.25,<4" ninja "clang-format==20.1.8"
+          echo "CCACHE_DIR=$GITHUB_WORKSPACE/.ccache" >> "$GITHUB_ENV"
+
+      - name: Restore ExaTN from the cache
+        id: exatn
+        uses: actions/cache@v4
+        with:
+          path: exatn-install
+          key: exatn-${{ env.EXATN_COMMIT }}-ubuntu-22.04-v1
+
+      - name: Build ExaTN
+        if: steps.exatn.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o boost.tar.bz2 \
+            https://archives.boost.io/release/1.64.0/source/boost_1_64_0.tar.bz2
+          echo "${BOOST_SHA256}  boost.tar.bz2" | sha256sum --check
+          tar xjf boost.tar.bz2
+          git clone https://github.com/ORNL-QCI/exatn.git
+          git -C exatn checkout "${EXATN_COMMIT}"
+          git -C exatn submodule update --init --recursive
+          # ExaTN does not build with the Ninja generator.
+          cmake -S exatn -B exatn/build -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/exatn-install" \
+            -DBLAS_LIB=ATLAS -DBLAS_PATH=/usr/lib/x86_64-linux-gnu -DWITH_LAPACK=ON \
+            -DBOOST_SOURCE="$PWD/boost_1_64_0" \
+            -DEXATN_BUILD_TESTS=OFF \
+            -DCMAKE_DISABLE_FIND_PACKAGE_MPI=ON \
+            -DCMAKE_DISABLE_FIND_PACKAGE_Python=ON
+          cmake --build exatn/build -j "$(nproc)"
+          cmake --install exatn/build
+          rm -rf exatn boost_1_64_0 boost.tar.bz2
+
+      - name: Download ns-3
+        run: |
+          curl -fsSL -o ns-3.tar.gz \
+            "https://gitlab.com/nsnam/ns-3-dev/-/archive/ns-${NS3_VERSION}/ns-3-dev-ns-${NS3_VERSION}.tar.gz"
+          tar xzf ns-3.tar.gz
+          mv "ns-3-dev-ns-${NS3_VERSION}" ns-3
+          rm ns-3.tar.gz
+
+      - name: Check out the module
+        uses: actions/checkout@v4
+        with:
+          path: ns-3/contrib/quantum
+
+      - name: Restore the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-ns-${{ env.NS3_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            ccache-ns-${{ env.NS3_VERSION }}-
+
+      - name: Configure
+        working-directory: ns-3
+        run: |
+          ./ns3 configure -G Ninja --enable-examples --enable-tests \
+            --enable-modules "csma;quantum" \
+            -- -DExaTN_DIR="$GITHUB_WORKSPACE/exatn-install" | tee configure.log
+          # Without ExaTN the module is skipped and the build still succeeds.
+          if ! grep -q "Processing contrib/quantum" configure.log ||
+             grep -q "Skipping contrib/quantum" configure.log; then
+            echo "The quantum module was not configured" >&2
+            exit 1
+          fi
+
+      - name: Build
+        working-directory: ns-3
+        run: ./ns3 build
+
+      - name: Run the tests
+        working-directory: ns-3
+        run: ./test.py --no-build -s quantum
+
+      - name: Run the examples
+        working-directory: ns-3
+        run: |
+          # The list of examples and their arguments lives in examples-to-run.py.
+          python3 -c 'import runpy; print("\n".join(e[0] for e in runpy.run_path("contrib/quantum/test/examples-to-run.py")["cpp_examples"]))' > examples.txt
+          while read -r example; do
+            ./test.py --no-build -e "$example"
+          done < examples.txt
+
+      - name: Check the coding style
+        working-directory: ns-3
+        run: |
+          # examples/netsquid-examples holds third-party scripts and is not checked.
+          python3 utils/check-style-clang-format.py \
+            contrib/quantum/model contrib/quantum/helper contrib/quantum/test \
+            contrib/quantum/doc contrib/quantum/examples/*.cc \
+            contrib/quantum/examples/CMakeLists.txt contrib/quantum/CMakeLists.txt

@@ -90,6 +90,13 @@ class QuantumNode : public Object
     void SetAddress(const Address& address);
 
     /**
+     * Check whether the node can exchange classical messages.
+     *
+     * @return True if an address was set or the node has an IP address.
+     */
+    bool HasAddress() const;
+
+    /**
      * Get the address at which the applications of other nodes reach this node.
      *
      * @return An IPv4 or IPv6 address of the node.
@@ -100,13 +107,22 @@ class QuantumNode : public Object
      * Get the UDP port on which the node offers a service.
      *
      * The first request for a service reserves a port; later requests return
-     * the same port. A receiving application and the applications that send to
-     * it can therefore be configured in any order.
+     * the same port. The helper of a receiving application and the helpers of
+     * the applications that send to it can therefore run in any order. This is
+     * used while a simulation is set up, not while it runs.
      *
      * @param service Name of the service; see QuantumChannel::GetServiceName().
      * @return The UDP port of the service.
      */
     uint16_t GetServicePort(const std::string& service);
+
+    /**
+     * Get the socket address on which the node offers a service.
+     *
+     * @param service Name of the service; see GetServicePort().
+     * @return The address of the node combined with the UDP port of the service.
+     */
+    Address GetServiceAddress(const std::string& service);
 
     /**
      * Take ownership of a qubit.
@@ -150,6 +166,14 @@ class QuantumNode : public Object
     void DoDispose() override;
 
   private:
+    /**
+     * Look for the address of the node.
+     *
+     * @return The address set by the user, else the first IPv4 address, else
+     *         the first global IPv6 address, else an invalid address.
+     */
+    Address FindAddress() const;
+
     /// First UDP port handed out by GetServicePort(), the start of the dynamic range.
     static constexpr uint16_t FIRST_PORT{49152};
 
